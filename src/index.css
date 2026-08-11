@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-display: "Plus Jakarta Sans", "Outfit", system-ui, sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: #F1F5F9;
+    color: #0F172A;
+  }
+}
