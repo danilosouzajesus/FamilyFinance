@@ -188,9 +188,9 @@ export default function CategoryManager({
   };
 
   return (
-    <div className="space-y-6" id="category-manager-container">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden" id="category-manager-container">
       {/* Header bar */}
-      <div className="flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200/60 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/60 shadow-sm">
         <div>
           <h1 className="text-xl font-display font-extrabold text-slate-900 tracking-tight">Categorias & Tags</h1>
           <p className="text-slate-500 text-xs mt-0.5 font-medium">Configure suas categorias, subcategorias e etiquetas do sistema de forma avançada</p>

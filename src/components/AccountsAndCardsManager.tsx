@@ -183,7 +183,7 @@ export default function AccountsAndCardsManager({
   };
 
   return (
-    <div className="space-y-6" id="accounts-manager-wrapper">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden" id="accounts-manager-wrapper">
       {/* Header section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>

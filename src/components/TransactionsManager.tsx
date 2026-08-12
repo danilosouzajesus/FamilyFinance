@@ -256,9 +256,9 @@ export default function TransactionsManager({
   const selectedCategoryObj = categories.find(c => c.name === category);
 
   return (
-    <div className="space-y-6" id="tx-manager-container">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden" id="tx-manager-container">
       {/* Header Bar */}
-      <div className="flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200/60 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/60 shadow-sm">
         <div>
           <h1 className="text-xl font-display font-extrabold text-slate-900 tracking-tight">Controle de Despesas e Receitas</h1>
           <p className="text-slate-500 text-xs mt-0.5 font-medium">Gerencie os fluxos monetários da sua família de forma granular</p>

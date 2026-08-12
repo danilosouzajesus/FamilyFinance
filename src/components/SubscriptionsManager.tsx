@@ -21,7 +21,7 @@ interface SubscriptionsManagerProps {
   automationRules: AutomationRule[];
   categories: Category[];
   familyMembers: FamilyMember[];
-  onAddSubscription: (sub: Omit<Subscription, 'id'>) => void;
+  onAddSubscription: (sub: Omit<Subscription, 'id'>, retroactiveMonths?: number) => void;
   onEditSubscription: (id: string, updated: Partial<Subscription>) => void;
   onDeleteSubscription: (id: string, deleteAssociatedTransactions: boolean) => void;
   onAddRule: (rule: Omit<AutomationRule, 'id'>) => void;
@@ -53,6 +53,7 @@ export default function SubscriptionsManager({
   const [subBillDate, setSubBillDate] = useState('10');
   const [subNotify, setSubNotify] = useState(true);
   const [subMember, setSubMember] = useState('mem_geral');
+  const [retroactiveMonths, setRetroactiveMonths] = useState<number>(0);
 
   // Deletion modal states
   const [deletingSubId, setDeletingSubId] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export default function SubscriptionsManager({
     setSubBillDate('10');
     setSubNotify(true);
     setSubMember('mem_geral');
+    setRetroactiveMonths(0);
     setIsSubFormOpen(true);
   };
 
@@ -87,6 +89,7 @@ export default function SubscriptionsManager({
     setSubBillDate(sub.billingDate);
     setSubNotify(sub.autoNotify);
     setSubMember(sub.memberId || 'mem_geral');
+    setRetroactiveMonths(0);
     setIsSubFormOpen(true);
   };
 
@@ -113,7 +116,7 @@ export default function SubscriptionsManager({
     if (editingSub) {
       onEditSubscription(editingSub.id, payload);
     } else {
-      onAddSubscription(payload);
+      onAddSubscription(payload, retroactiveMonths);
     }
     setIsSubFormOpen(false);
   };
@@ -454,6 +457,29 @@ export default function SubscriptionsManager({
                   </select>
                 </div>
               </div>
+
+              {!editingSub && (
+                <div className="p-3.5 bg-indigo-50/50 border border-indigo-100/80 rounded-xl space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-indigo-900 font-bold">
+                    <Calendar size={14} className="text-indigo-600" />
+                    <span>Lançamentos Retroativos</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Deseja preencher seu histórico de transações gerando cobranças anteriores automaticamente?
+                  </p>
+                  <select
+                    value={retroactiveMonths}
+                    onChange={(e) => setRetroactiveMonths(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 text-[11px] border border-indigo-200 rounded-lg bg-white font-bold text-indigo-950 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                  >
+                    <option value={0}>Não gerar lançamentos passados (Apenas agendar futuros)</option>
+                    <option value={1}>Gerar para o mês anterior (1 lançamento)</option>
+                    <option value={3}>Gerar para os últimos 3 meses (3 lançamentos)</option>
+                    <option value={6}>Gerar para os últimos 6 meses (6 lançamentos)</option>
+                    <option value={12}>Gerar para os últimos 12 meses (12 lançamentos)</option>
+                  </select>
+                </div>
+              )}
 
               <div className="flex items-center gap-2 pt-2">
                 <input

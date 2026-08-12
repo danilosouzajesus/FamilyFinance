@@ -13,9 +13,13 @@ import InvestmentsManager from './components/InvestmentsManager';
 import BankIntegration from './components/BankIntegration';
 import SecurityAndSettings from './components/SecurityAndSettings';
 import AccountsAndCardsManager from './components/AccountsAndCardsManager';
+import AuthModal from './components/AuthModal';
+import UserMenu from './components/UserMenu';
+import PremiumFeatures from './components/PremiumFeatures';
 import { getInitialState, saveState } from './utils/initialData';
 import { FinancialState, Transaction, Budget, Goal, FamilyMember, Account, Subscription, Debt, Investment, AutomationRule, Category } from './types';
-import { Download, Upload, RefreshCw, Database, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Download, Upload, RefreshCw, Database, AlertCircle, CheckCircle2, User as UserIcon, LogIn, LogOut } from 'lucide-react';
+import { User, Session } from '@supabase/supabase-js';
 import { 
   getSupabaseClient, 
   fetchStateFromSupabase, 
@@ -45,6 +49,11 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [supabaseConnected, setSupabaseConnected] = useState<boolean>(() => !!getSupabaseClient());
   const [supabaseDiagnostic, setSupabaseDiagnostic] = useState<SupabaseDiagnosticInfo | null>(null);
+
+  // Supabase Auth states
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentSession, setCurrentSession] = useState<Session | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
   const handleFetchFromSupabase = async () => {
     const client = getSupabaseClient();
@@ -87,6 +96,41 @@ export default function App() {
       window.removeEventListener('supabase_config_changed', onConfigChanged);
     };
   }, []);
+
+  // Listen to Supabase Auth Session
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (client) {
+      client.auth.getSession().then(({ data: { session } }) => {
+        setCurrentSession(session);
+        setCurrentUser(session?.user ?? null);
+      });
+
+      const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+        setCurrentSession(session);
+        setCurrentUser(session?.user ?? null);
+        if (session) {
+          handleFetchFromSupabase();
+        }
+      });
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    } else {
+      setCurrentSession(null);
+      setCurrentUser(null);
+    }
+  }, [supabaseConnected]);
+
+  const handleSignOut = async () => {
+    const client = getSupabaseClient();
+    if (client) {
+      await client.auth.signOut();
+    }
+    setCurrentSession(null);
+    setCurrentUser(null);
+  };
 
   // Sync state to LocalStorage on changes
 
@@ -552,16 +596,81 @@ export default function App() {
   // ==========================================
   // SUBSCRIPTION CRUD HANDLERS
   // ==========================================
-  const handleAddSubscription = async (newSubData: Omit<Subscription, 'id'>) => {
+  const handleAddSubscription = async (newSubData: Omit<Subscription, 'id'>, retroactiveMonths?: number) => {
     const newSub: Subscription = {
       ...newSubData,
       id: `sub_${Date.now()}`
     };
-    setState(prev => ({
-      ...prev,
-      subscriptions: [...(prev.subscriptions || []), newSub]
-    }));
+
+    let generatedTxs: Transaction[] = [];
+    let affectedAccounts: Account[] = [];
+
+    setState(prev => {
+      const now = new Date();
+      const billingDay = parseInt(newSub.billingDate) || now.getDate();
+      const retroTxs: Transaction[] = [];
+      let totalDeduction = 0;
+      const targetAccountId = prev.accounts[0]?.id || 'acc_itau';
+
+      for (let i = 1; i <= (retroactiveMonths || 0); i++) {
+        const pastDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const daysInMonth = new Date(pastDate.getFullYear(), pastDate.getMonth() + 1, 0).getDate();
+        const actualDay = Math.min(billingDay, daysInMonth);
+
+        const year = pastDate.getFullYear();
+        const month = String(pastDate.getMonth() + 1).padStart(2, '0');
+        const day = String(actualDay).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
+
+        const monthNames = [
+          'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+          'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+        ];
+        const monthLabel = monthNames[pastDate.getMonth()];
+
+        retroTxs.push({
+          id: `tx_retro_${Date.now()}_${i}`,
+          type: 'expense',
+          category: newSub.category,
+          subcategory: 'Mensalidade',
+          tags: ['Assinatura', newSub.name],
+          amount: newSub.amount,
+          date: dateStr,
+          recurring: 'none',
+          notes: `Assinatura: ${newSub.name} - ${monthLabel} de ${year}`,
+          memberId: newSub.memberId || 'mem_geral',
+          accountId: targetAccountId
+        });
+
+        totalDeduction += newSub.amount;
+      }
+
+      generatedTxs = retroTxs;
+
+      const updatedAccounts = prev.accounts.map(acc => {
+        if (acc.id === targetAccountId) {
+          const updated = { ...acc, balance: acc.balance - totalDeduction };
+          affectedAccounts.push(updated);
+          return updated;
+        }
+        return acc;
+      });
+
+      return {
+        ...prev,
+        subscriptions: [...(prev.subscriptions || []), newSub],
+        transactions: [...retroTxs, ...prev.transactions],
+        accounts: updatedAccounts
+      };
+    });
+
     await syncSubscription(newSub);
+    for (const tx of generatedTxs) {
+      await syncTransaction(tx);
+    }
+    for (const acc of affectedAccounts) {
+      await syncAccount(acc);
+    }
   };
 
   const handleEditSubscription = async (id: string, updatedFields: Partial<Subscription>) => {
@@ -884,7 +993,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F1F5F9] text-slate-900 flex" id="app-root-layout">
+    <div className="min-h-screen bg-[#F1F5F9] text-slate-900 flex max-w-full overflow-x-hidden" id="app-root-layout">
       
       {/* Sidebar Navigation */}
       <Sidebar 
@@ -893,98 +1002,59 @@ export default function App() {
         isCollapsed={isSidebarCollapsed}
         setIsCollapsed={setIsSidebarCollapsed}
         totalBalance={totalBalance}
+        currentUser={currentUser}
+        onOpenAuthModal={() => setIsAuthModalOpen(true)}
+        onSignOut={handleSignOut}
       />
 
       {/* Main Content Area */}
-      <main className={`flex-1 transition-all duration-300 min-h-screen pb-12 ${isSidebarCollapsed ? 'md:ml-20' : 'md:ml-64'}`}>
+      <main className={`flex-1 transition-all duration-300 min-h-screen pb-12 w-full max-w-full overflow-x-hidden ${isSidebarCollapsed ? 'md:ml-20' : 'md:ml-64'}`}>
         
         {/* Top bar with quick settings & backup */}
-        <header className="h-16 border-b border-slate-200/60 bg-white flex items-center justify-between px-6 md:px-8 shadow-sm">
-          <div className="flex items-center gap-1.5 md:hidden">
-            {/* Mobile Branding Placeholder */}
-            <span className="font-display font-extrabold text-slate-900 text-base">Family<span className="text-indigo-600">Finance</span></span>
-          </div>
-          <div className="hidden md:flex items-center gap-3">
-            <span className="text-[11px] text-slate-400 font-bold uppercase tracking-wider font-sans">Sistema de Organização Familiar Integrado</span>
+        <header className="h-16 border-b border-slate-200/60 bg-white flex items-center justify-between px-3 sm:px-6 md:px-8 shadow-xs sticky top-0 z-30">
+          <div className="flex items-center gap-2 pl-10 md:pl-0">
+            {/* Mobile / Tablet Branding */}
+            <span className="font-display font-extrabold text-slate-900 text-sm sm:text-base tracking-tight">
+              Family<span className="text-indigo-600">Finance</span>
+            </span>
           </div>
 
-          {/* Supabase Status & Backup Actions bar */}
-          <div className="flex items-center gap-2">
-            {/* Supabase Status Indicator */}
-            {supabaseConnected ? (
-              <button
-                onClick={() => setActiveView('security')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200/80 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-                title="Supabase Conectado — Clique para ver detalhes de segurança"
-                id="header-supabase-status-btn"
-              >
-                <Database size={14} className="text-emerald-600" />
-                <span className="hidden sm:inline">Supabase Conectado</span>
-                {isSyncing && <RefreshCw size={12} className="animate-spin text-emerald-600 ml-1" />}
-              </button>
-            ) : (
-              <button
-                onClick={() => setActiveView('security')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300/80 hover:bg-amber-100 text-amber-800 rounded-xl text-xs font-bold transition-colors cursor-pointer animate-pulse"
-                title="Supabase Desconectado — Clique para configurar URL e Anon Key"
-                id="header-supabase-status-btn"
-              >
-                <AlertCircle size={14} className="text-amber-600" />
-                <span>Supabase Desconectado</span>
-              </button>
-            )}
+          <div className="hidden lg:flex items-center gap-3">
+            <span className="text-[11px] text-slate-400 font-bold uppercase tracking-wider font-sans">
+              Sistema de Organização Familiar Integrado
+            </span>
+          </div>
 
+          {/* Header Actions & User Menu */}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Sync button */}
             <button
+              type="button"
               onClick={handleFetchFromSupabase}
-              className="inline-flex items-center p-1.5 bg-slate-50 border border-slate-200/65 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 text-slate-500 rounded-xl transition-colors cursor-pointer"
-              title="Sincronizar/Buscar dados do Supabase agora"
+              className="p-2 sm:px-2.5 sm:py-1.5 bg-slate-50 border border-slate-200/80 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 text-slate-600 rounded-xl transition-colors cursor-pointer"
+              title="Sincronizar dados agora"
               id="header-sync-now-btn"
             >
               <RefreshCw size={14} className={isSyncing ? 'animate-spin text-indigo-600' : ''} />
             </button>
 
-            <button
-              onClick={handleExportBackup}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200/65 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-xl text-xs font-bold cursor-pointer transition-colors"
-              title="Exportar Backup dos Dados"
-              id="header-backup-btn"
-            >
-              <Download size={14} /> <span className="hidden sm:inline">Exportar</span>
-            </button>
-            <label
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200/65 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-xl text-xs font-bold cursor-pointer transition-colors"
-              title="Importar Backup dos Dados"
-              id="header-restore-label"
-            >
-              <Upload size={14} /> <span className="hidden sm:inline">Restaurar</span>
-              <input
-                type="file"
-                accept=".json"
-                onChange={handleImportBackup}
-                className="hidden"
-              />
-            </label>
+            {/* Comprehensive User Menu Dropdown */}
+            <UserMenu 
+              currentUser={currentUser}
+              supabaseConnected={supabaseConnected}
+              isSyncing={isSyncing}
+              onOpenAuthModal={() => setIsAuthModalOpen(true)}
+              onOpenSecuritySettings={() => setActiveView('settings-premium')}
+              onSignOut={handleSignOut}
+              onFetchFromSupabase={handleFetchFromSupabase}
+              onExportBackup={handleExportBackup}
+              onImportBackup={handleImportBackup}
+            />
           </div>
         </header>
 
-        {/* Supabase Disconnected Alert Banner */}
-        {!supabaseConnected && (
-          <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-orange-600 text-white px-6 py-2.5 flex items-center justify-between text-xs font-medium shadow-sm">
-            <div className="flex items-center gap-2">
-              <AlertCircle size={16} className="text-amber-100 shrink-0" />
-              <span><strong>Atenção (Supabase Desconectado):</strong> O aplicativo não encontrou as credenciais do Supabase. Para visualizar e salvar os dados do seu banco de dados, insira a <strong>URL do Supabase</strong> e a <strong>Anon Key</strong> na aba de Configurações.</span>
-            </div>
-            <button
-              onClick={() => setActiveView('security')}
-              className="px-3.5 py-1.5 bg-white text-amber-900 hover:bg-amber-50 font-bold rounded-lg shrink-0 ml-4 transition-all shadow-xs cursor-pointer"
-            >
-              Conectar Agora
-            </button>
-          </div>
-        )}
-
         {/* View Canvas Wrapper */}
-        <div className="p-6 md:p-8 max-w-7xl mx-auto">
+        <div className="p-3 sm:p-5 md:p-8 max-w-7xl mx-auto overflow-x-hidden">
           {activeView === 'dashboard' && (
             <Dashboard 
               transactions={state.transactions}
@@ -1104,6 +1174,12 @@ export default function App() {
             />
           )}
 
+          {activeView === 'premium-features' && (
+            <PremiumFeatures 
+              financialState={state}
+            />
+          )}
+
           {activeView === 'settings-premium' && (
             <SecurityAndSettings 
               financialState={state}
@@ -1119,6 +1195,21 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* Supabase Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        currentUser={currentUser}
+        onSessionChange={(session) => {
+          setCurrentSession(session);
+          setCurrentUser(session?.user ?? null);
+          if (session) {
+            handleFetchFromSupabase();
+          }
+        }}
+        onOpenSettings={() => setActiveView('settings-premium')}
+      />
     </div>
   );
 }

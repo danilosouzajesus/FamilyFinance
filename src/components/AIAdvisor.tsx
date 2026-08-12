@@ -146,9 +146,9 @@ Isso pode acontecer por instabilidades de rede. Por favor, tente novamente em al
   ];
 
   return (
-    <div className="flex flex-col h-[calc(100vh-100px)] max-h-[800px] bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden" id="ai-advisor-component">
+    <div className="flex flex-col h-[calc(100vh-100px)] max-h-[800px] bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden w-full max-w-full" id="ai-advisor-component">
       {/* Top Advisor Header */}
-      <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-indigo-50/20 to-violet-50/20 flex items-center justify-between">
+      <div className="px-4 sm:px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-indigo-50/20 to-violet-50/20 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-sm shrink-0">
             <Sparkles size={18} />

@@ -135,9 +135,9 @@ export default function Dashboard({
   });
 
   return (
-    <div className="space-y-6" id="dashboard-container">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden" id="dashboard-container">
       {/* Welcome Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/60 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/60 shadow-sm">
         <div>
           <h1 className="text-2xl font-display font-extrabold text-slate-900 tracking-tight">Olá, Família! 👋</h1>
           <p className="text-slate-500 text-xs mt-0.5">Aqui está o balanço das finanças familiares para agosto de 2026.</p>
