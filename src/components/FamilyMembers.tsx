@@ -13,10 +13,12 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { FamilyMember, Transaction } from '../types';
+import { currentMonthStr } from '../utils/format';
 
 interface FamilyMembersProps {
   familyMembers: FamilyMember[];
   transactions: Transaction[];
+  isPrivateMode?: boolean;
   onAddMember: (member: Omit<FamilyMember, 'id'>) => void;
   onEditMember: (id: string, member: Partial<FamilyMember>) => void;
   onDeleteMember: (id: string) => void;
@@ -25,6 +27,7 @@ interface FamilyMembersProps {
 export default function FamilyMembers({
   familyMembers,
   transactions,
+  isPrivateMode = false,
   onAddMember,
   onEditMember,
   onDeleteMember
@@ -37,6 +40,8 @@ export default function FamilyMembers({
   const [name, setName] = useState('');
   const [role, setRole] = useState<'father' | 'mother' | 'child' | 'other'>('father');
   const [avatar, setAvatar] = useState('bg-blue-600 text-white');
+  const [accessRole, setAccessRole] = useState<'admin' | 'member'>('member');
+  const [notifyChannels, setNotifyChannels] = useState<string[]>(['push']);
 
   // Validation States
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -66,6 +71,8 @@ export default function FamilyMembers({
     setName('');
     setRole('other');
     setAvatar('bg-slate-600 text-white');
+    setAccessRole('member');
+    setNotifyChannels(['push']);
     setValidationError(null);
     setIsModalOpen(true);
   };
@@ -76,6 +83,8 @@ export default function FamilyMembers({
     setName(m.name);
     setRole(m.role);
     setAvatar(m.avatar);
+    setAccessRole(m.accessRole || 'member');
+    setNotifyChannels(m.notifyChannels || ['push']);
     setValidationError(null);
     setIsModalOpen(true);
   };
@@ -92,7 +101,9 @@ export default function FamilyMembers({
     const memberData = {
       name,
       role,
-      avatar
+      avatar,
+      accessRole,
+      notifyChannels: notifyChannels as ('push' | 'email' | 'whatsapp')[]
     };
 
     if (editingMember) {
@@ -104,11 +115,11 @@ export default function FamilyMembers({
     setIsModalOpen(false);
   };
 
-  // Calculate Monthly Metrics per Member (August 2026 simulation)
-  const currentMonthStr = "2026-08";
+  // Calculate Monthly Metrics per Member (current month)
+  const currentMonthStrValue = currentMonthStr();
   
   const getMemberMetrics = (memberId: string) => {
-    const memberTransactions = transactions.filter(t => t.memberId === memberId && t.date.startsWith(currentMonthStr));
+    const memberTransactions = transactions.filter(t => t.memberId === memberId && t.date.startsWith(currentMonthStrValue));
     
     const incomes = memberTransactions
       .filter(t => t.type === 'income')
@@ -162,9 +173,25 @@ export default function FamilyMembers({
                   </div>
                   <div>
                     <h3 className="text-sm font-display font-bold text-slate-900">{m.name}</h3>
-                    <span className="inline-flex px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
-                      {roleTranslations[m.role]}
-                    </span>
+                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                      <span className="inline-flex px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
+                        {roleTranslations[m.role]}
+                      </span>
+                      {m.accessRole === 'admin' ? (
+                        <span className="inline-flex px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-100 text-[9px] font-bold text-emerald-600 uppercase tracking-wider">
+                          Administrador
+                        </span>
+                      ) : (
+                        <span className="inline-flex px-1.5 py-0.5 rounded bg-slate-50 border border-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                          Membro
+                        </span>
+                      )}
+                      {(m.notifyChannels || []).length > 0 && (
+                        <span className="inline-flex px-1.5 py-0.5 rounded bg-amber-50 border border-amber-100 text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+                          {(m.notifyChannels || []).map(c => c === 'push' ? 'Push' : c === 'email' ? 'Email' : 'WhatsApp').join(' · ')}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -202,14 +229,14 @@ export default function FamilyMembers({
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold uppercase block">Receitas</span>
                     <span className="text-xs font-bold text-emerald-600 inline-flex items-center gap-0.5 mt-0.5">
-                      <ArrowUpRight size={12} /> R$ {metrics.incomes.toFixed(0)}
+                      <ArrowUpRight size={12} /> {isPrivateMode ? 'R$ ***' : `R$ ${metrics.incomes.toFixed(0)}`}
                     </span>
                   </div>
                   {/* Expenses */}
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold uppercase block">Despesas</span>
                     <span className="text-xs font-bold text-slate-800 inline-flex items-center gap-0.5 mt-0.5">
-                      <ArrowDownRight size={12} className="text-rose-500" /> R$ {metrics.expenses.toFixed(0)}
+                      <ArrowDownRight size={12} className="text-rose-500" /> {isPrivateMode ? 'R$ ***' : `R$ ${metrics.expenses.toFixed(0)}`}
                     </span>
                   </div>
                 </div>
@@ -218,7 +245,7 @@ export default function FamilyMembers({
                 <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
                   <span className="font-semibold text-slate-500">Saldo Líquido</span>
                   <span className={`font-display font-extrabold ${metrics.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    R$ {metrics.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    {isPrivateMode ? 'R$ ***' : `R$ ${metrics.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
                   </span>
                 </div>
               </div>
@@ -280,6 +307,54 @@ export default function FamilyMembers({
                   <option value="child">Filho(a) (Dependente)</option>
                   <option value="other">Outros / Geral</option>
                 </select>
+              </div>
+
+              {/* Access Role (5.1 RBAC) */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase">Nível de Acesso (RBAC)</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAccessRole('admin')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      accessRole === 'admin' ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-200' : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-800">Administrador</span>
+                    <span className="block text-[9px] text-slate-500 font-medium mt-0.5">Edita orçamentos, metas e gerencia membros</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccessRole('member')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      accessRole === 'member' ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-800">Membro</span>
+                    <span className="block text-[9px] text-slate-500 font-medium mt-0.5">Visualiza e registra transações próprias</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Notification Channels */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase">Canais de Notificação</label>
+                <div className="flex flex-wrap gap-2">
+                  {(['push', 'email', 'whatsapp'] as const).map(ch => (
+                    <label key={ch} className="flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700 cursor-pointer hover:border-slate-300 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={notifyChannels.includes(ch)}
+                        onChange={(e) => {
+                          if (e.target.checked) setNotifyChannels(prev => [...prev, ch]);
+                          else setNotifyChannels(prev => prev.filter(c => c !== ch));
+                        }}
+                        className="accent-indigo-600 cursor-pointer"
+                      />
+                      {ch === 'push' ? 'Push' : ch === 'email' ? 'Email' : 'WhatsApp'}
+                    </label>
+                  ))}
+                </div>
               </div>
 
               {/* Avatar Style Picker */}

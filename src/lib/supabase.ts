@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { FinancialState, Transaction, Budget, Goal, FamilyMember, Account, Subscription, Debt, Investment, AutomationRule, Category } from '../types';
+import { FinancialState, Transaction, Budget, MonthlyGoal, Goal, FamilyMember, Account, Subscription, Debt, Investment, AutomationRule, Category, Subcategory, Tag, CreditCard, Invoice, GoalContribution } from '../types';
 
 // Helper to get connection options
 export function getSupabaseCredentials() {
@@ -32,6 +32,8 @@ export function getSupabaseClient(): SupabaseClient | null {
         auth: {
           persistSession: true,
           autoRefreshToken: true,
+          detectSessionInUrl: true,
+          flowType: 'pkce',
         }
       });
       currentClientKey = keyStr;
@@ -90,9 +92,11 @@ export async function runSupabaseDiagnostics(): Promise<SupabaseDiagnosticInfo> 
   const tables = [
     'family_members',
     'categories',
+    'tags',
     'accounts',
     'transactions',
     'budgets',
+    'monthly_goals',
     'goals',
     'subscriptions',
     'debts',
@@ -141,26 +145,36 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
 
     const [
       categoriesData,
+      tagsData,
       familyMembersData,
       accountsData,
       transactionsData,
       budgetsData,
+      monthlyGoalsData,
       goalsData,
       subscriptionsData,
       debtsData,
       investmentsData,
-      automationRulesData
+      automationRulesData,
+      creditCardsData,
+      invoicesData,
+      goalContributionsData
     ] = await Promise.all([
       safeFetch(() => supabase.from('categories').select('*'), 'categories'),
+      safeFetch(() => supabase.from('tags').select('*'), 'tags'),
       safeFetch(() => supabase.from('family_members').select('*'), 'family_members'),
       safeFetch(() => supabase.from('accounts').select('*'), 'accounts'),
       safeFetch(() => supabase.from('transactions').select('*').order('date', { ascending: false }), 'transactions'),
       safeFetch(() => supabase.from('budgets').select('*'), 'budgets'),
+      safeFetch(() => supabase.from('monthly_goals').select('*'), 'monthly_goals'),
       safeFetch(() => supabase.from('goals').select('*'), 'goals'),
       safeFetch(() => supabase.from('subscriptions').select('*'), 'subscriptions'),
       safeFetch(() => supabase.from('debts').select('*'), 'debts'),
       safeFetch(() => supabase.from('investments').select('*'), 'investments'),
       safeFetch(() => supabase.from('automation_rules').select('*'), 'automation_rules'),
+      safeFetch(() => supabase.from('credit_cards').select('*'), 'credit_cards'),
+      safeFetch(() => supabase.from('invoices').select('*'), 'invoices'),
+      safeFetch(() => supabase.from('goal_contributions').select('*'), 'goal_contributions'),
     ]);
 
     const result: Partial<FinancialState> = {};
@@ -175,9 +189,29 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
           type: c.type,
           icon: c.icon || 'Folder',
           color: c.color || '#6366F1',
-          subcategories: Array.isArray(c.subcategories) ? c.subcategories : [],
+          parentId: c.parent_id || undefined,
+          isShared: c.is_shared ?? true,
         };
       });
+      
+      // Separate subcategories (those with parent_id)
+      result.subcategories = categoriesData
+        .filter(c => c.parent_id)
+        .map(c => ({
+          id: c.id,
+          name: c.name,
+          categoryId: c.parent_id,
+          icon: c.icon,
+          color: c.color,
+        }));
+    }
+
+    if (tagsData !== null) {
+      result.tags = tagsData.map(t => ({
+        id: t.id,
+        name: t.name,
+        color: t.color || '#6366F1',
+      }));
     }
 
     if (familyMembersData !== null) {
@@ -186,6 +220,8 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         name: f.name,
         role: f.role,
         avatar: f.avatar,
+        accessRole: f.access_role || 'member',
+        notifyChannels: Array.isArray(f.notify_channels) ? f.notify_channels : ['push'],
       }));
     }
 
@@ -203,17 +239,28 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
       result.transactions = transactionsData.map(t => ({
         id: t.id,
         type: t.type,
+        categoryId: t.category_id || '',
         category: t.category_name || (t.category_id ? categoryMap.get(t.category_id) : '') || t.category || 'Geral',
+        subcategoryId: t.subcategory_id || undefined,
         subcategory: t.subcategory || '',
-        tags: Array.isArray(t.tags) ? t.tags : [],
+        tagIds: Array.isArray(t.tag_ids) ? t.tag_ids : [],
         amount: Number(t.amount || 0),
         date: typeof t.date === 'string' ? t.date : (t.date ? new Date(t.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]),
         recurring: t.recurring || 'none',
+        recurrenceConfig: t.recurrence_config || undefined,
+        recurrenceGroupId: t.recurrence_group_id || undefined,
         notes: t.notes || '',
         memberId: t.member_id || '',
         accountId: t.account_id || '',
-        attachmentName: t.attachment_name,
-        attachmentUrl: t.attachment_url,
+        attachmentUrls: Array.isArray(t.attachment_urls) ? t.attachment_urls : (t.attachment_url ? [t.attachment_url] : []),
+        attachmentNames: Array.isArray(t.attachment_names) ? t.attachment_names : (t.attachment_name ? [t.attachment_name] : []),
+        status: t.status || 'REALIZADO',
+        deleted_at: t.deleted_at || undefined,
+        creditCardId: t.credit_card_id || undefined,
+        invoiceId: t.invoice_id || undefined,
+        installmentNumber: t.installment_number != null ? Number(t.installment_number) : undefined,
+        totalInstallments: t.total_installments != null ? Number(t.total_installments) : undefined,
+        includeInBalanceSum: t.include_in_balance_sum ?? true,
       }));
     }
 
@@ -223,10 +270,37 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         categoryId: b.category_id,
         limit: Number(b.limit_amount || 0),
         month: b.month,
+        notifyAtPercent: b.notify_at_percent ?? 80,
+        rollover: b.rollover ?? false,
+      }));
+    }
+
+    if (monthlyGoalsData !== null) {
+      result.monthlyGoals = monthlyGoalsData.map(g => ({
+        id: g.id,
+        name: g.name,
+        month: g.month,
+        limit: Number(g.limit_amount || 0),
+        categoryIds: Array.isArray(g.category_ids) ? g.category_ids : [],
+        notifyAtPercent: g.notify_at_percent ?? 80,
       }));
     }
 
     if (goalsData !== null) {
+      const contributionsByGoal = new Map<string, GoalContribution[]>();
+      if (goalContributionsData !== null) {
+        for (const c of goalContributionsData) {
+          const entry: GoalContribution = {
+            memberId: c.member_id,
+            amount: Number(c.amount || 0),
+            date: typeof c.date === 'string' ? c.date : new Date(c.date).toISOString().split('T')[0],
+            type: c.type,
+          };
+          const list = contributionsByGoal.get(c.goal_id) || [];
+          list.push(entry);
+          contributionsByGoal.set(c.goal_id, list);
+        }
+      }
       result.goals = goalsData.map(g => ({
         id: g.id,
         name: g.name,
@@ -234,6 +308,10 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         currentAmount: Number(g.current_amount || 0),
         deadline: g.deadline,
         color: g.color || '#10B981',
+        categoryId: g.category || undefined,
+        accountId: g.account_id || undefined,
+        monthlyContribution: g.monthly_contribution != null ? Number(g.monthly_contribution) : undefined,
+        contributions: contributionsByGoal.get(g.id),
       }));
     }
 
@@ -244,9 +322,13 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         amount: Number(s.amount || 0),
         frequency: s.frequency,
         category: s.category,
-        billingDate: s.billing_date,
+        billingDate: s.billing_date != null ? String(s.billing_date) : '1',
         autoNotify: s.auto_notify ?? true,
-        memberId: s.member_id || 'mem_geral',
+        memberId: s.member_id || '',
+        paymentMethod: s.payment_method || 'credit_card',
+        notifyChannel: s.notify_channel || 'push',
+        notifyDays: s.notify_days != null ? Number(s.notify_days) : 3,
+        accountId: s.account_id || undefined,
       }));
     }
 
@@ -254,6 +336,7 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
       result.debts = debtsData.map(d => ({
         id: d.id,
         name: d.name,
+        creditor: d.creditor || '',
         totalAmount: Number(d.total_amount || 0),
         installmentsCount: Number(d.installments_count || 1),
         installmentAmount: Number(d.installment_amount || 0),
@@ -261,6 +344,7 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         nextDueDate: d.next_due_date,
         category: d.category,
         paidInstallments: Number(d.paid_installments || 0),
+        accountId: d.account_id || undefined,
       }));
     }
 
@@ -274,6 +358,12 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         startDate: i.start_date,
         simpleYield: Number(i.simple_yield || 0),
         contributionsCount: Number(i.contributions_count || 1),
+        withdrawalsCount: Number(i.withdrawals_count || 0),
+        accountId: i.account_id || undefined,
+        origin: i.origin || undefined,
+        pluggyInvestmentId: i.pluggy_investment_id || undefined,
+        pluggyItemId: i.pluggy_item_id || undefined,
+        isReconciled: !!i.is_reconciled,
       }));
     }
 
@@ -284,6 +374,32 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
         conditionValue: r.condition_value,
         actionField: r.action_field,
         actionValue: r.action_value,
+      }));
+    }
+
+    if (creditCardsData !== null) {
+      result.creditCards = creditCardsData.map(c => ({
+        id: c.id,
+        name: c.name,
+        limitAmount: Number(c.limit_amount || 0),
+        closingDay: Number(c.closing_day || 1),
+        dueDay: Number(c.due_day || 1),
+        accountId: c.account_id || '',
+        color: c.color || '#8B5CF6',
+      }));
+    }
+
+    if (invoicesData !== null) {
+      result.invoices = invoicesData.map(i => ({
+        id: i.id,
+        creditCardId: i.credit_card_id,
+        month: Number(i.month),
+        year: Number(i.year),
+        closingDate: i.closing_date,
+        dueDate: i.due_date,
+        totalAmount: Number(i.total_amount || 0),
+        status: i.status,
+        paidAt: i.paid_at || undefined,
       }));
     }
 
@@ -311,24 +427,39 @@ export async function syncTransaction(tx: Transaction, isDelete = false): Promis
       const { data: catData } = await supabase.from('categories').select('id').eq('name', tx.category).single();
       const catId = catData?.id || null;
 
+      // Find subcategory ID matching name
+      const { data: subData } = tx.subcategoryId 
+        ? await supabase.from('categories').select('id').eq('id', tx.subcategoryId).single()
+        : { data: null };
+      const subId = subData?.id || null;
+
       const dbPayload = {
         id: tx.id,
         type: tx.type,
         category_id: catId,
         category_name: tx.category,
+        subcategory_id: subId,
         subcategory: tx.subcategory || '',
-        tags: tx.tags || [],
+        tag_ids: tx.tagIds || [],
         amount: tx.amount,
         date: tx.date,
         recurring: tx.recurring || 'none',
+        recurrence_config: tx.recurrenceConfig || null,
+        recurrence_group_id: tx.recurrenceGroupId || null,
         notes: tx.notes || '',
-        member_id: tx.memberId || 'mem_geral',
-        account_id: tx.accountId || 'acc_itau',
-        attachment_name: tx.attachmentName || null,
-        attachment_url: tx.attachmentUrl || null
+        member_id: tx.memberId || null,
+        account_id: tx.accountId || null,
+        attachment_urls: tx.attachmentUrls || [],
+        attachment_names: tx.attachmentNames || [],
+        status: tx.status || 'REALIZADO',
+        credit_card_id: tx.creditCardId || null,
+        invoice_id: tx.invoiceId || null,
+        installment_number: tx.installmentNumber ?? 1,
+        total_installments: tx.totalInstallments ?? 1,
+        include_in_balance_sum: tx.includeInBalanceSum ?? true,
       };
       const { error } = await supabase.from('transactions').upsert(dbPayload);
-      if (error) console.error('Error syncing transaction:', error);
+      if (error) console.error('Error syncing transaction:', error.message, JSON.stringify(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -337,7 +468,7 @@ export async function syncTransaction(tx: Transaction, isDelete = false): Promis
   }
 }
 
-export async function syncCategory(cat: Category, isDelete = false): Promise<boolean> {
+export async function syncCategory(cat: Category | Subcategory, isDelete = false): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (!supabase) return false;
 
@@ -349,10 +480,11 @@ export async function syncCategory(cat: Category, isDelete = false): Promise<boo
       const dbPayload = {
         id: cat.id,
         name: cat.name,
-        type: cat.type,
-        icon: cat.icon,
-        color: cat.color,
-        subcategories: cat.subcategories || [],
+        type: 'type' in cat ? cat.type : 'expense',
+        icon: cat.icon || 'Folder',
+        color: cat.color || '#6366F1',
+        parent_id: 'parentId' in cat ? (cat.parentId || null) : ('categoryId' in cat ? cat.categoryId : null),
+        is_shared: 'isShared' in cat ? (cat.isShared ?? true) : true,
       };
       const { error } = await supabase.from('categories').upsert(dbPayload);
       return !error;
@@ -388,6 +520,62 @@ export async function syncAccount(acc: Account, isDelete = false): Promise<boole
   }
 }
 
+export async function syncCreditCard(card: CreditCard, isDelete = false): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  try {
+    if (isDelete) {
+      const { error } = await supabase.from('credit_cards').delete().eq('id', card.id);
+      return !error;
+    } else {
+      const dbPayload = {
+        id: card.id,
+        name: card.name,
+        limit_amount: card.limitAmount,
+        closing_day: card.closingDay,
+        due_day: card.dueDay,
+        account_id: card.accountId,
+        color: card.color || '#8B5CF6',
+      };
+      const { error } = await supabase.from('credit_cards').upsert(dbPayload);
+      return !error;
+    }
+  } catch (err) {
+    console.error('Failed to sync credit card to Supabase:', err);
+    return false;
+  }
+}
+
+export async function syncInvoice(inv: Invoice, isDelete = false): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  try {
+    if (isDelete) {
+      const { error } = await supabase.from('invoices').delete().eq('id', inv.id);
+      return !error;
+    } else {
+      const dbPayload = {
+        id: inv.id,
+        credit_card_id: inv.creditCardId,
+        month: inv.month,
+        year: inv.year,
+        closing_date: inv.closingDate,
+        due_date: inv.dueDate,
+        total_amount: inv.totalAmount,
+        status: inv.status,
+        paid_at: inv.paidAt || null,
+      };
+      const { error } = await supabase.from('invoices').upsert(dbPayload);
+      return !error;
+    }
+  } catch (err) {
+    console.error('Failed to sync invoice to Supabase:', err);
+    return false;
+  }
+}
+
 export async function syncBudget(bud: Budget, isDelete = false): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (!supabase) return false;
@@ -399,13 +587,15 @@ export async function syncBudget(bud: Budget, isDelete = false): Promise<boolean
     } else {
       // Find category object matching categoryId/name to insert properly
       const { data: catData } = await supabase.from('categories').select('id').eq('name', bud.categoryId).single();
-      const categoryId = catData?.id || (bud.categoryId.startsWith('cat_') ? bud.categoryId : 'cat_moradia');
+      const categoryId = catData?.id || null;
 
       const dbPayload = {
         id: bud.id,
         category_id: categoryId,
         limit_amount: bud.limit,
         month: bud.month,
+        notify_at_percent: bud.notifyAtPercent ?? 80,
+        rollover: bud.rollover ?? false,
       };
       const { error } = await supabase.from('budgets').upsert(dbPayload);
       return !error;
@@ -432,12 +622,59 @@ export async function syncGoal(goal: Goal, isDelete = false): Promise<boolean> {
         current_amount: goal.currentAmount,
         deadline: goal.deadline,
         color: goal.color,
+        category: goal.categoryId || null,
+        account_id: goal.accountId || null,
+        monthly_contribution: goal.monthlyContribution ?? null,
       };
       const { error } = await supabase.from('goals').upsert(dbPayload);
-      return !error;
+      if (error) return false;
+
+      // Persistir ledger de aportes/resgates (delete + reinsert, pois o app envia a lista completa)
+      const contributions = goal.contributions || [];
+      const { error: delErr } = await supabase.from('goal_contributions').delete().eq('goal_id', goal.id);
+      if (delErr) return false;
+      if (contributions.length > 0) {
+        const rows = contributions.map((c, i) => ({
+          id: `${goal.id}_${i}`,
+          goal_id: goal.id,
+          member_id: c.memberId,
+          amount: c.amount,
+          date: c.date,
+          type: c.type,
+        }));
+        const { error: insErr } = await supabase.from('goal_contributions').insert(rows);
+        return !insErr;
+      }
+      return true;
     }
   } catch (err) {
     console.error('Failed to sync goal to Supabase:', err);
+    return false;
+  }
+}
+
+export async function syncMonthlyGoal(goal: MonthlyGoal, isDelete = false): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  try {
+    if (isDelete) {
+      const { error } = await supabase.from('monthly_goals').delete().eq('id', goal.id);
+      return !error;
+    } else {
+      const dbPayload = {
+        id: goal.id,
+        name: goal.name,
+        month: goal.month,
+        limit_amount: goal.limit,
+        category_ids: goal.categoryIds || [],
+        notify_at_percent: goal.notifyAtPercent ?? 80,
+      };
+      const { error } = await supabase.from('monthly_goals').upsert(dbPayload);
+      return !error;
+    }
+  } catch (err) {
+    console.error('Failed to sync monthly goal to Supabase:', err);
     return false;
   }
 }
@@ -451,15 +688,22 @@ export async function syncSubscription(sub: Subscription, isDelete = false): Pro
       const { error } = await supabase.from('subscriptions').delete().eq('id', sub.id);
       return !error;
     } else {
+      const billingDay = sub.billingDate
+        ? (sub.billingDate.length > 2 ? parseInt(sub.billingDate.split('-')[2]) : parseInt(sub.billingDate)) || 1
+        : 1;
       const dbPayload = {
         id: sub.id,
         name: sub.name,
         amount: sub.amount,
         frequency: sub.frequency,
         category: sub.category,
-        billing_date: sub.billingDate,
+        billing_date: billingDay,
         auto_notify: sub.autoNotify,
         member_id: sub.memberId,
+        payment_method: sub.paymentMethod || 'credit_card',
+        notify_channel: sub.notifyChannel || 'push',
+        notify_days: sub.notifyDays ?? 3,
+        account_id: sub.accountId || null,
       };
       const { error } = await supabase.from('subscriptions').upsert(dbPayload);
       return !error;
@@ -482,6 +726,7 @@ export async function syncDebt(debt: Debt, isDelete = false): Promise<boolean> {
       const dbPayload = {
         id: debt.id,
         name: debt.name,
+        creditor: debt.creditor || null,
         total_amount: debt.totalAmount,
         installments_count: debt.installmentsCount,
         installment_amount: debt.installmentAmount,
@@ -489,6 +734,7 @@ export async function syncDebt(debt: Debt, isDelete = false): Promise<boolean> {
         next_due_date: debt.nextDueDate,
         category: debt.category,
         paid_installments: debt.paidInstallments,
+        account_id: debt.accountId || null,
       };
       const { error } = await supabase.from('debts').upsert(dbPayload);
       return !error;
@@ -517,6 +763,12 @@ export async function syncInvestment(inv: Investment, isDelete = false): Promise
         start_date: inv.startDate,
         simple_yield: inv.simpleYield,
         contributions_count: inv.contributionsCount,
+        withdrawals_count: inv.withdrawalsCount || 0,
+        account_id: inv.accountId || null,
+        origin: inv.origin || null,
+        pluggy_investment_id: inv.pluggyInvestmentId || null,
+        pluggy_item_id: inv.pluggyItemId || null,
+        is_reconciled: inv.isReconciled || false,
       };
       const { error } = await supabase.from('investments').upsert(dbPayload);
       return !error;
@@ -566,6 +818,8 @@ export async function syncFamilyMember(mem: FamilyMember, isDelete = false): Pro
         name: mem.name,
         role: mem.role,
         avatar: mem.avatar,
+        access_role: mem.accessRole || 'member',
+        notify_channels: mem.notifyChannels || ['push'],
       };
       const { error } = await supabase.from('family_members').upsert(dbPayload);
       return !error;
@@ -576,126 +830,59 @@ export async function syncFamilyMember(mem: FamilyMember, isDelete = false): Pro
   }
 }
 
-// Seeding standard data into empty tables
-export async function seedSupabaseTables(
-  defaultCategories: Category[],
-  defaultFamilyMembers: FamilyMember[],
-  defaultAccounts: Account[],
-  defaultTransactions: Transaction[],
-  defaultSubscriptions: Subscription[],
-  defaultDebts: Debt[],
-  defaultInvestments: Investment[],
-  defaultAutomationRules: AutomationRule[]
-): Promise<boolean> {
+export async function syncTag(tag: Tag, isDelete = false): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (!supabase) return false;
 
   try {
-    // 1. Categories
-    const categoriesToInsert = defaultCategories.map(c => ({
-      id: c.id,
-      name: c.name,
-      type: c.type,
-      icon: c.icon,
-      color: c.color,
-      subcategories: c.subcategories
-    }));
-    await supabase.from('categories').upsert(categoriesToInsert);
-
-    // 2. Family Members
-    const familyMembersToInsert = defaultFamilyMembers.map(m => ({
-      id: m.id,
-      name: m.name,
-      role: m.role,
-      avatar: m.avatar
-    }));
-    await supabase.from('family_members').upsert(familyMembersToInsert);
-
-    // 3. Accounts
-    const accountsToInsert = defaultAccounts.map(a => ({
-      id: a.id,
-      name: a.name,
-      type: a.type,
-      balance: a.balance,
-      color: a.color
-    }));
-    await supabase.from('accounts').upsert(accountsToInsert);
-
-    // 4. Subscriptions
-    const subsToInsert = defaultSubscriptions.map(s => ({
-      id: s.id,
-      name: s.name,
-      amount: s.amount,
-      frequency: s.frequency,
-      category: s.category,
-      billing_date: s.billingDate,
-      auto_notify: s.autoNotify,
-      member_id: s.memberId
-    }));
-    await supabase.from('subscriptions').upsert(subsToInsert);
-
-    // 5. Debts
-    const debtsToInsert = defaultDebts.map(d => ({
-      id: d.id,
-      name: d.name,
-      total_amount: d.totalAmount,
-      installments_count: d.installmentsCount,
-      installment_amount: d.installmentAmount,
-      interest_rate: d.interestRate,
-      next_due_date: d.nextDueDate,
-      category: d.category,
-      paid_installments: d.paidInstallments
-    }));
-    await supabase.from('debts').upsert(debtsToInsert);
-
-    // 6. Investments
-    const invsToInsert = defaultInvestments.map(i => ({
-      id: i.id,
-      type: i.type,
-      name: i.name,
-      initial_amount: i.initialAmount,
-      current_amount: i.currentAmount,
-      start_date: i.startDate,
-      simple_yield: i.simpleYield,
-      contributions_count: i.contributionsCount
-    }));
-    await supabase.from('investments').upsert(invsToInsert);
-
-    // 7. Automation Rules
-    const rulesToInsert = defaultAutomationRules.map(r => ({
-      id: r.id,
-      condition_field: r.conditionField,
-      condition_value: r.conditionValue,
-      action_field: r.actionField,
-      action_value: r.actionValue
-    }));
-    await supabase.from('automation_rules').upsert(rulesToInsert);
-
-    // 8. Transactions
-    const txsToInsert = defaultTransactions.map(t => {
-      const categoryObj = defaultCategories.find(c => c.name === t.category);
-      return {
-        id: t.id,
-        type: t.type,
-        category_id: categoryObj ? categoryObj.id : null,
-        category_name: t.category,
-        subcategory: t.subcategory || '',
-        tags: t.tags || [],
-        amount: t.amount,
-        date: t.date,
-        recurring: t.recurring,
-        notes: t.notes || '',
-        member_id: t.memberId,
-        account_id: t.accountId,
-        attachment_name: t.attachmentName || null,
-        attachment_url: t.attachmentUrl || null
+    if (isDelete) {
+      const { error } = await supabase.from('tags').delete().eq('id', tag.id);
+      return !error;
+    } else {
+      const dbPayload = {
+        id: tag.id,
+        name: tag.name,
+        color: tag.color,
       };
-    });
-    await supabase.from('transactions').upsert(txsToInsert);
+      const { error } = await supabase.from('tags').upsert(dbPayload);
+      return !error;
+    }
+  } catch (err) {
+    console.error('Failed to sync tag to Supabase:', err);
+    return false;
+  }
+}
 
-    return true;
-  } catch (error) {
-    console.error('Error seeding Supabase tables:', error);
+// ==========================================
+// APP PREFERENCES (chave-valor, ex: período padrão)
+// ==========================================
+
+export async function fetchAppPreference(key: string): Promise<any | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.from('app_preferences').select('value').eq('key', key).maybeSingle();
+    if (error) {
+      console.warn(`[Supabase Error] failed to load preference ${key}:`, error.message || error);
+      return null;
+    }
+    return data?.value ?? null;
+  } catch (err) {
+    console.warn(`[Supabase Exception] while loading preference ${key}:`, err);
+    return null;
+  }
+}
+
+export async function saveAppPreference(key: string, value: any): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase
+      .from('app_preferences')
+      .upsert({ key, value, updated_at: new Date().toISOString() });
+    return !error;
+  } catch (err) {
+    console.error(`Failed to save preference ${key} to Supabase:`, err);
     return false;
   }
 }

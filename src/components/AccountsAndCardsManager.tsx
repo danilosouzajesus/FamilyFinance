@@ -14,30 +14,60 @@ import {
   TrendingDown,
   Building2
 } from 'lucide-react';
-import { Account, Transaction } from '../types';
+import { Account, Transaction, CreditCard as CreditCardType, Invoice } from '../types';
+import { invoiceStatusLabel } from '../utils/invoiceEngine';
+
+const SHORT_MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+const shortMonthLabel = (year: number, month: number) => `${SHORT_MONTHS[month - 1]}/${year}`;
 
 interface AccountsAndCardsManagerProps {
   accounts: Account[];
   transactions: Transaction[];
+  creditCards?: CreditCardType[];
+  invoices?: Invoice[];
+  isPrivateMode?: boolean;
   onAddAccount: (acc: Account) => void;
   onEditAccount: (id: string, updated: Partial<Account>) => void;
   onDeleteAccount: (id: string, remapAccountId?: string) => void;
+  onAddCreditCard?: (card: Omit<CreditCardType, 'id'>) => void;
+  onEditCreditCard?: (id: string, updated: Partial<CreditCardType>) => void;
+  onDeleteCreditCard?: (id: string) => void;
+  onPayInvoice?: (invoiceId: string) => void;
 }
 
 export default function AccountsAndCardsManager({
   accounts = [],
   transactions = [],
+  creditCards = [],
+  invoices = [],
+  isPrivateMode = false,
   onAddAccount,
   onEditAccount,
-  onDeleteAccount
+  onDeleteAccount,
+  onAddCreditCard,
+  onEditCreditCard,
+  onDeleteCreditCard,
+  onPayInvoice
 }: AccountsAndCardsManagerProps) {
   // Modal state
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
 
+  // Credit card modal state
+  const [isCardFormOpen, setIsCardFormOpen] = useState(false);
+  const [editingCard, setEditingCard] = useState<CreditCardType | null>(null);
+  const [cardName, setCardName] = useState('');
+  const [cardLimit, setCardLimit] = useState('');
+  const [cardClosingDay, setCardClosingDay] = useState('10');
+  const [cardDueDay, setCardDueDay] = useState('15');
+  const [cardAccountId, setCardAccountId] = useState('');
+  const [cardColor, setCardColor] = useState('#8B5CF6');
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
+
   // Form states
   const [name, setName] = useState('');
-  const [type, setType] = useState<'cash' | 'bank' | 'credit'>('bank');
+  const [type, setType] = useState<'cash' | 'bank' | 'investment'>('bank');
   const [balance, setBalance] = useState<number>(0);
   const [color, setColor] = useState('#6366F1');
 
@@ -46,7 +76,7 @@ export default function AccountsAndCardsManager({
   const [remapAccId, setRemapAccId] = useState('');
 
   // Filter state
-  const [activeFilter, setActiveFilter] = useState<'all' | 'cash' | 'bank' | 'credit'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'cash' | 'bank' | 'investment'>('all');
 
   // Predefined colors
   const colors = [
@@ -87,7 +117,7 @@ export default function AccountsAndCardsManager({
   const handleOpenEdit = (acc: Account) => {
     setEditingAccount(acc);
     setName(acc.name);
-    setType(acc.type);
+    setType(acc.type === 'credit' ? 'bank' : acc.type);
     setBalance(acc.balance);
     setColor(acc.color || '#6366F1');
     setIsFormOpen(true);
@@ -115,6 +145,64 @@ export default function AccountsAndCardsManager({
       onAddAccount(newAcc);
     }
     setIsFormOpen(false);
+  };
+
+  const handleOpenAddCard = () => {
+    setEditingCard(null);
+    setCardName('');
+    setCardLimit('');
+    setCardClosingDay('10');
+    setCardDueDay('15');
+    setCardAccountId(accounts.find(a => a.type === 'bank')?.id || accounts[0]?.id || '');
+    setCardColor('#8B5CF6');
+    setIsCardFormOpen(true);
+  };
+
+  const handleOpenEditCard = (card: CreditCardType) => {
+    setEditingCard(card);
+    setCardName(card.name);
+    setCardLimit(String(card.limitAmount));
+    setCardClosingDay(String(card.closingDay));
+    setCardDueDay(String(card.dueDay));
+    setCardAccountId(card.accountId);
+    setCardColor(card.color || '#8B5CF6');
+    setIsCardFormOpen(true);
+  };
+
+  const handleCardSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cardName.trim()) return;
+
+    const parsedLimit = parseFloat(cardLimit) || 0;
+    const parsedClosing = parseInt(cardClosingDay, 10) || 1;
+    const parsedDue = parseInt(cardDueDay, 10) || 1;
+
+    if (editingCard && onEditCreditCard) {
+      onEditCreditCard(editingCard.id, {
+        name: cardName.trim(),
+        limitAmount: parsedLimit,
+        closingDay: parsedClosing,
+        dueDay: parsedDue,
+        accountId: cardAccountId || editingCard.accountId,
+        color: cardColor
+      });
+    } else if (onAddCreditCard) {
+      onAddCreditCard({
+        name: cardName.trim(),
+        limitAmount: parsedLimit,
+        closingDay: parsedClosing,
+        dueDay: parsedDue,
+        accountId: cardAccountId || 'acc_itau',
+        color: cardColor
+      });
+    }
+    setIsCardFormOpen(false);
+  };
+
+  const handleDeleteCardRequest = (card: CreditCardType) => {
+    if (onDeleteCreditCard && window.confirm(`Tem certeza de que deseja excluir o cartão "${card.name}"?`)) {
+      onDeleteCreditCard(card.id);
+    }
   };
 
   const handleDeleteRequest = (acc: Account) => {
@@ -148,11 +236,11 @@ export default function AccountsAndCardsManager({
     .filter(a => a.type === 'bank')
     .reduce((sum, a) => sum + a.balance, 0);
 
-  const totalCredit = accounts
-    .filter(a => a.type === 'credit')
+  const totalInvestment = accounts
+    .filter(a => a.type === 'investment')
     .reduce((sum, a) => sum + a.balance, 0);
 
-  const totalBalance = totalCash + totalBank + totalCredit;
+  const totalBalance = totalCash + totalBank + totalInvestment;
 
   // Filtered accounts
   const filteredAccounts = accounts.filter(a => {
@@ -160,23 +248,27 @@ export default function AccountsAndCardsManager({
     return a.type === activeFilter;
   });
 
-  const getAccountIcon = (accType: 'cash' | 'bank' | 'credit') => {
+  const getAccountIcon = (accType: Account['type']) => {
     switch (accType) {
       case 'cash':
         return <Wallet size={18} />;
       case 'bank':
         return <Landmark size={18} />;
+      case 'investment':
+        return <TrendingUp size={18} />;
       case 'credit':
         return <CreditCard size={18} />;
     }
   };
 
-  const getAccountTypeLabel = (accType: 'cash' | 'bank' | 'credit') => {
+  const getAccountTypeLabel = (accType: Account['type']) => {
     switch (accType) {
       case 'cash':
         return 'Dinheiro em Espécie';
       case 'bank':
         return 'Conta Bancária';
+      case 'investment':
+        return 'Conta de Investimento';
       case 'credit':
         return 'Cartão de Crédito';
     }
@@ -194,13 +286,22 @@ export default function AccountsAndCardsManager({
             Gerencie carteiras de dinheiro, contas correntes e cartões de crédito da sua família.
           </p>
         </div>
-        <button
-          onClick={handleOpenAdd}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer shadow-indigo-100"
-          id="btn-add-account"
-        >
-          <Plus size={16} /> Adicionar Nova Conta
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={handleOpenAddCard}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer shadow-amber-100"
+            id="btn-add-credit-card-top"
+          >
+            <CreditCard size={16} /> Criar Cartão de Crédito
+          </button>
+          <button
+            onClick={handleOpenAdd}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer shadow-indigo-100"
+            id="btn-add-account"
+          >
+            <Plus size={16} /> Adicionar Nova Conta
+          </button>
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -231,13 +332,13 @@ export default function AccountsAndCardsManager({
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm flex items-center justify-between">
           <div className="space-y-1">
-            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Cartões de Crédito</span>
-            <span className={`text-lg font-black block ${totalCredit < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-              R$ {totalCredit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Contas de Investimento</span>
+            <span className={`text-lg font-black block ${totalInvestment >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>
+              R$ {totalInvestment.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
             </span>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-            <CreditCard size={18} />
+          <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <TrendingUp size={18} />
           </div>
         </div>
 
@@ -277,16 +378,6 @@ export default function AccountsAndCardsManager({
           Contas Bancárias ({accounts.filter(a => a.type === 'bank').length})
         </button>
         <button
-          onClick={() => setActiveFilter('credit')}
-          className={`px-4 py-2 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap cursor-pointer ${
-            activeFilter === 'credit' 
-              ? 'border-indigo-600 text-indigo-600' 
-              : 'border-transparent text-slate-400 hover:text-slate-600'
-          }`}
-        >
-          Cartões ({accounts.filter(a => a.type === 'credit').length})
-        </button>
-        <button
           onClick={() => setActiveFilter('cash')}
           className={`px-4 py-2 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap cursor-pointer ${
             activeFilter === 'cash' 
@@ -296,7 +387,31 @@ export default function AccountsAndCardsManager({
         >
           Dinheiro ({accounts.filter(a => a.type === 'cash').length})
         </button>
+        <button
+          onClick={() => setActiveFilter('investment')}
+          className={`px-4 py-2 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap cursor-pointer ${
+            activeFilter === 'investment' 
+              ? 'border-indigo-600 text-indigo-600' 
+              : 'border-transparent text-slate-400 hover:text-slate-600'
+          }`}
+        >
+          Investimentos ({accounts.filter(a => a.type === 'investment').length})
+        </button>
       </div>
+
+      {/* Contas Segment */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+              <Wallet size={16} className="text-emerald-600" />
+              Contas
+            </h2>
+            <p className="text-[10px] text-slate-400 font-medium">
+              Suas contas bancárias e dinheiro.
+            </p>
+          </div>
+        </div>
 
       {/* Grid containing Cards/Accounts */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="accounts-grid-items">
@@ -383,6 +498,142 @@ export default function AccountsAndCardsManager({
           </div>
         )}
       </div>
+    </div>
+
+      {/* Cartões Segment */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+              <CreditCard size={16} className="text-amber-600" />
+              Cartões de Crédito
+            </h2>
+            <p className="text-[10px] text-slate-400 font-medium">
+              Fechamento, vencimento, limite e faturas por ciclo.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="credit-cards-grid">
+          {creditCards.map((card) => {
+            const cardInvoices = invoices.filter(i => i.creditCardId === card.id);
+            const openInvoices = cardInvoices.filter(i => i.status !== 'PAID');
+            const resolvedColorHex = resolveColor(card.color || '#8B5CF6');
+            const isExpanded = expandedCardId === card.id;
+
+            return (
+              <div
+                key={card.id}
+                className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-col justify-between"
+                style={{ borderTop: `4px solid ${resolvedColorHex}` }}
+              >
+                <div className="p-5 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-600 border border-amber-100">
+                        <CreditCard size={12} /> Cartão de Crédito
+                      </span>
+                      <h3 className="text-sm font-black text-slate-800 leading-snug pt-1">{card.name}</h3>
+                      <p className="text-[10px] text-slate-400 font-medium">
+                        Fecha dia {card.closingDay} · Vence dia {card.dueDay}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleOpenEditCard(card)}
+                        className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-lg transition-colors cursor-pointer"
+                        title="Editar Cartão"
+                      >
+                        <Edit3 size={14} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCardRequest(card)}
+                        className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+                        title="Excluir Cartão"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">Limite do Cartão</span>
+                      <span className="text-lg font-black text-slate-800">
+                        {isPrivateMode ? 'R$ ***' : `R$ ${card.limitAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">Faturas</span>
+                      <span className={`text-lg font-black ${openInvoices.length > 0 ? 'text-amber-600' : 'text-slate-800'}`}>
+                        {cardInvoices.length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-5 py-3 bg-slate-50 border-t border-slate-100">
+                  <button
+                    onClick={() => setExpandedCardId(isExpanded ? null : card.id)}
+                    className="w-full flex items-center justify-between text-[10px] text-slate-500 font-bold hover:text-indigo-600 transition-colors cursor-pointer"
+                  >
+                    <span>{cardInvoices.length} Faturas</span>
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: resolvedColorHex }} />
+                  </button>
+
+                  {isExpanded && (
+                    <div className="mt-3 space-y-2">
+                      {cardInvoices.length === 0 && (
+                        <p className="text-[10px] text-slate-400 font-medium">Nenhuma fatura gerada ainda.</p>
+                      )}
+                      {cardInvoices.map(inv => (
+                        <div key={inv.id} className="bg-white border border-slate-200 rounded-xl p-3 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-extrabold text-slate-800">{shortMonthLabel(inv.year, inv.month)}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                              inv.status === 'PAID' ? 'bg-emerald-50 text-emerald-600'
+                              : inv.status === 'OVERDUE' ? 'bg-rose-50 text-rose-600'
+                              : 'bg-amber-50 text-amber-600'
+                            }`}>
+                              {invoiceStatusLabel[inv.status]}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-slate-500 font-bold">
+                              {isPrivateMode ? 'R$ ***' : `R$ ${inv.totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+                            </span>
+                            <span className="text-[9px] text-slate-400">Vence {new Date(inv.dueDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                          </div>
+                          {inv.status !== 'PAID' && onPayInvoice && (
+                            <button
+                              onClick={() => onPayInvoice(inv.id)}
+                              className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg transition-all cursor-pointer"
+                            >
+                              Pagar Fatura de {shortMonthLabel(inv.year, inv.month)}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {creditCards.length === 0 && (
+            <div className="col-span-full bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-8 text-center space-y-2">
+              <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center mx-auto text-amber-500">
+                <CreditCard size={18} />
+              </div>
+              <h4 className="text-xs font-bold text-slate-700">Nenhum cartão de crédito cadastrado</h4>
+              <p className="text-[10px] text-slate-400 font-medium max-w-sm mx-auto">
+                Cadastre cartões com dia de fechamento e vencimento para gerar faturas automaticamente.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Main Add/Edit Form Modal */}
       {isFormOpen && (
@@ -390,7 +641,7 @@ export default function AccountsAndCardsManager({
           <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden border border-slate-100 animate-slide-up">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                {editingAccount ? 'Editar Conta / Cartão' : 'Nova Conta / Cartão'}
+                {editingAccount ? 'Editar Conta' : 'Nova Conta'}
               </h3>
               <button 
                 onClick={() => setIsFormOpen(false)}
@@ -403,7 +654,7 @@ export default function AccountsAndCardsManager({
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {/* Account Name */}
               <div className="space-y-1">
-                <label className="block text-[10px] text-slate-400 font-bold uppercase">Nome da Conta / Cartão</label>
+                <label className="block text-[10px] text-slate-400 font-bold uppercase">Nome da Conta</label>
                 <input
                   type="text"
                   required
@@ -432,15 +683,15 @@ export default function AccountsAndCardsManager({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setType('credit')}
+                    onClick={() => setType('investment')}
                     className={`py-2 px-3 border rounded-xl text-xs font-bold flex flex-col items-center gap-1 cursor-pointer transition-all ${
-                      type === 'credit' 
+                      type === 'investment' 
                         ? 'border-indigo-600 bg-indigo-50 text-indigo-700' 
                         : 'border-slate-200 text-slate-500 hover:bg-slate-50'
                     }`}
                   >
-                    <CreditCard size={16} />
-                    <span>Cartão</span>
+                    <TrendingUp size={16} />
+                    <span>Investimento</span>
                   </button>
                   <button
                     type="button"
@@ -460,7 +711,7 @@ export default function AccountsAndCardsManager({
               {/* Balance */}
               <div className="space-y-1">
                 <label className="block text-[10px] text-slate-400 font-bold uppercase">
-                  {type === 'credit' ? 'Saldo Devedor / Fatura Atual' : 'Saldo Inicial / Atual'}
+                  {'Saldo Inicial / Atual'}
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">R$</span>
@@ -474,11 +725,6 @@ export default function AccountsAndCardsManager({
                     className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-500 font-bold"
                   />
                 </div>
-                {type === 'credit' && (
-                  <p className="text-[9px] text-slate-400 leading-normal font-medium">
-                    *Para cartões de crédito com fatura aberta ou saldo devedor, utilize valores negativos (Ex: -450).
-                  </p>
-                )}
               </div>
 
               {/* Color selector */}
@@ -513,6 +759,111 @@ export default function AccountsAndCardsManager({
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
                 >
                   {editingAccount ? 'Salvar Alterações' : 'Criar Registro'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Credit Card Add/Edit Form Modal */}
+      {isCardFormOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden border border-slate-100 animate-slide-up">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-amber-50/20">
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                {editingCard ? 'Editar Cartão de Crédito' : 'Novo Cartão de Crédito'}
+              </h3>
+              <button 
+                onClick={() => setIsCardFormOpen(false)}
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCardSubmit} className="p-6 space-y-4">
+              <div className="space-y-1">
+                <label className="block text-[10px] text-slate-400 font-bold uppercase">Nome do Cartão</label>
+                <input
+                  type="text"
+                  required
+                  value={cardName}
+                  onChange={(e) => setCardName(e.target.value)}
+                  placeholder="Ex: Banco Itaú, Nubank, XP"
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 font-semibold"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="block text-[10px] text-slate-400 font-bold uppercase">Limite do Cartão (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={cardLimit}
+                    onChange={(e) => setCardLimit(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-[10px] text-slate-400 font-bold uppercase">Conta p/ Pagamento</label>
+                  <select
+                    value={cardAccountId}
+                    onChange={(e) => setCardAccountId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 font-semibold"
+                  >
+                    <option value="">-- Selecionar --</option>
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="block text-[10px] text-slate-400 font-bold uppercase">Dia de Fechamento</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    required
+                    value={cardClosingDay}
+                    onChange={(e) => setCardClosingDay(e.target.value)}
+                    placeholder="10"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-[10px] text-slate-400 font-bold uppercase">Dia de Vencimento</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    required
+                    value={cardDueDay}
+                    onChange={(e) => setCardDueDay(e.target.value)}
+                    placeholder="15"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCardFormOpen(false)}
+                  className="px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
+                >
+                  {editingCard ? 'Salvar Alterações' : 'Criar Cartão'}
                 </button>
               </div>
             </form>

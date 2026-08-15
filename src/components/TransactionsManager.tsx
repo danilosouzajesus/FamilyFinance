@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Plus, 
   Search, 
@@ -14,18 +14,36 @@ import {
   CreditCard,
   Grid,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
-import { Transaction, Category, Account, FamilyMember, RecurrenceType, TransactionType } from '../types';
+import { Transaction, Category, Account, FamilyMember, RecurrenceType, TransactionType, Tag as TagType, CreditCard as CreditCardType, Invoice, PeriodPreference } from '../types';
+import PeriodSelector from './PeriodSelector';
+import { fetchAppPreference, saveAppPreference } from '../lib/supabase';
+import { assignInvoicePeriod, invoiceIdFor, buildInstallmentTransactions, invoiceStatusLabel, parseInvoiceId, dueDateFor } from '../utils/invoiceEngine';
 
 interface TransactionsManagerProps {
   transactions: Transaction[];
   categories: Category[];
   accounts: Account[];
   familyMembers: FamilyMember[];
+  allTags: TagType[];
+  creditCards: CreditCardType[];
+  invoices: Invoice[];
+  isPrivateMode: boolean;
+  onAddTag: (newTag: TagType) => Promise<void> | void;
   onAddTransaction: (transaction: Omit<Transaction, 'id'>) => void;
   onEditTransaction: (id: string, transaction: Partial<Transaction>, scope: 'only_this' | 'all') => void;
   onDeleteTransaction: (id: string, scope: 'only_this' | 'all') => void;
+}
+
+const DEFAULT_TAG_COLOR = '#6366F1';
+
+function resolveTxTagNames(tagIds: string[], allTags: TagType[]): string[] {
+  return tagIds
+    .map(id => allTags.find(tag => tag.id === id)?.name || id)
+    .filter((name): name is string => !!name);
 }
 
 export default function TransactionsManager({
@@ -33,6 +51,10 @@ export default function TransactionsManager({
   categories,
   accounts,
   familyMembers,
+  allTags,
+  creditCards,
+  invoices,
+  onAddTag,
   onAddTransaction,
   onEditTransaction,
   onDeleteTransaction
@@ -41,7 +63,9 @@ export default function TransactionsManager({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
-  const [filterAccount, setFilterAccount] = useState<string>('all');
+  const [filterAccount, setFilterAccount] = useState<string[]>([]);
+  const [accountFilterOpen, setAccountFilterOpen] = useState(false);
+  const [accountFilterSearch, setAccountFilterSearch] = useState('');
   const [filterMember, setFilterMember] = useState<string>('all');
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
@@ -71,6 +95,42 @@ export default function TransactionsManager({
   const [currentTag, setCurrentTag] = useState('');
   const [attachmentName, setAttachmentName] = useState('');
 
+  // Credit Card / Invoice form states
+  const [creditCardId, setCreditCardId] = useState('');
+  const [invoiceId, setInvoiceId] = useState('');
+  const [installments, setInstallments] = useState('1');
+  const [expandedInvoiceId, setExpandedInvoiceId] = useState<string | null>(null);
+
+  // Period (PeriodSelector) state
+  const [periodPref, setPeriodPref] = useState<PeriodPreference | null>(null);
+  const [periodRange, setPeriodRange] = useState<{ start: string; end: string } | null>(null);
+
+  // Load saved period default from Supabase on mount
+  useEffect(() => {
+    let cancelled = false;
+    fetchAppPreference('transactions_period_default').then((v) => {
+      if (!cancelled && v) setPeriodPref(v as PeriodPreference);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handlePeriodApply = useCallback((start: string, end: string) => {
+    setPeriodRange({ start, end });
+  }, []);
+
+  const handlePeriodSaveDefault = useCallback((pref: PeriodPreference) => {
+    return saveAppPreference('transactions_period_default', pref);
+  }, []);
+
+  // Recompute the invoice whenever the credit card or purchase date changes
+  useEffect(() => {
+    const card = creditCards.find(c => c.id === creditCardId);
+    if (card && date) {
+      const { year, month } = assignInvoicePeriod(card, date);
+      setInvoiceId(invoiceIdFor(card.id, year, month));
+    }
+  }, [creditCardId, date, creditCards]);
+
   // Form Validations & Errors
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -91,6 +151,9 @@ export default function TransactionsManager({
     setAccountId(accounts[0]?.id || '');
     setTags([]);
     setAttachmentName('');
+    setCreditCardId('');
+    setInvoiceId('');
+    setInstallments('1');
     setValidationError(null);
     setIsFormOpen(true);
   };
@@ -107,8 +170,11 @@ export default function TransactionsManager({
     setNotes(t.notes);
     setMemberId(t.memberId);
     setAccountId(t.accountId);
-    setTags(t.tags);
-    setAttachmentName(t.attachmentName || '');
+    setTags(resolveTxTagNames(t.tagIds, allTags));
+    setAttachmentName(t.attachmentNames?.[0] || '');
+    setCreditCardId(t.creditCardId || '');
+    setInvoiceId(t.invoiceId || '');
+    setInstallments(t.totalInstallments?.toString() || '1');
     setValidationError(null);
     setIsFormOpen(true);
   };
@@ -162,18 +228,31 @@ export default function TransactionsManager({
       return;
     }
 
-    const transactionData = {
+    const categoryObj = categories.find(c => c.name === category);
+    const tagIds = tags.map((name, i) => {
+      const existing = allTags.find(t => t.name.toLowerCase() === name.toLowerCase());
+      if (existing) return existing.id;
+      const newTag: TagType = { id: `tag_${Date.now()}_${i}`, name, color: DEFAULT_TAG_COLOR };
+      if (onAddTag) onAddTag(newTag);
+      return newTag.id;
+    });
+
+    const transactionData: Omit<Transaction, 'id'> = {
       type,
+      categoryId: categoryObj?.id || '',
       category,
+      subcategoryId: categoryObj?.parentId ? categoryObj.id : undefined,
       subcategory,
-      tags,
+      tagIds,
       amount: parsedAmount,
       date,
       recurring,
       notes,
       memberId,
       accountId,
-      attachmentName: attachmentName || undefined,
+      attachmentUrls: attachmentName ? [attachmentName] : [],
+      attachmentNames: attachmentName ? [attachmentName] : [],
+      status: 'REALIZADO',
     };
 
     if (editingTransaction) {
@@ -190,11 +269,41 @@ export default function TransactionsManager({
         onEditTransaction(editingTransaction.id, transactionData, 'only_this');
         setIsFormOpen(false);
       }
-    } else {
-      // Create new
-      onAddTransaction(transactionData);
-      setIsFormOpen(false);
+      return;
     }
+
+    // Credit card purchase: assign invoice automatically and (optionally) split installments
+    const selectedCard = creditCards.find(c => c.id === creditCardId);
+    if (selectedCard) {
+      const { year, month } = assignInvoicePeriod(selectedCard, date);
+      const numInstallments = Math.max(1, parseInt(installments, 10) || 1);
+      const cardBase = {
+        ...transactionData,
+        creditCardId: selectedCard.id,
+        includeInBalanceSum: false,
+      };
+      if (numInstallments > 1) {
+        const installmentTxs = buildInstallmentTransactions(
+          { ...cardBase, invoiceId: invoiceIdFor(selectedCard.id, year, month) },
+          { year, month },
+          numInstallments
+        );
+        installmentTxs.forEach(tx => onAddTransaction(tx));
+      } else {
+        onAddTransaction({
+          ...cardBase,
+          invoiceId,
+          installmentNumber: 1,
+          totalInstallments: 1,
+        });
+      }
+      setIsFormOpen(false);
+      return;
+    }
+
+    // Create new (plain)
+    onAddTransaction(transactionData);
+    setIsFormOpen(false);
   };
 
   // Delete Click
@@ -225,13 +334,14 @@ export default function TransactionsManager({
   };
 
   // List Filtering Logic
-  const filteredTransactions = transactions.filter(t => {
+  // Filters that apply to both plain transactions and invoice purchases.
+  const matchesAllFilters = (t: Transaction) => {
     // 1. Search term match
-    const matchesSearch = 
+    const matchesSearch =
       t.notes.toLowerCase().includes(searchTerm.toLowerCase()) ||
       t.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
       t.subcategory.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+      resolveTxTagNames(t.tagIds, allTags).some(tagName => tagName.toLowerCase().includes(searchTerm.toLowerCase()));
 
     // 2. Type filter
     const matchesType = filterType === 'all' || t.type === filterType;
@@ -240,7 +350,7 @@ export default function TransactionsManager({
     const matchesCategory = filterCategory === 'all' || t.category === filterCategory;
 
     // 4. Account filter
-    const matchesAccount = filterAccount === 'all' || t.accountId === filterAccount;
+    const matchesAccount = filterAccount.length === 0 || filterAccount.includes(t.accountId);
 
     // 5. Member filter
     const matchesMember = filterMember === 'all' || t.memberId === filterMember;
@@ -250,10 +360,216 @@ export default function TransactionsManager({
     const matchesEndDate = !filterEndDate || t.date <= filterEndDate;
 
     return matchesSearch && matchesType && matchesCategory && matchesAccount && matchesMember && matchesStartDate && matchesEndDate;
+  };
+
+  const matchesPeriodDate = (date: string) => !periodRange || (date >= periodRange.start && date <= periodRange.end);
+
+  // Build invoice groups from every transaction that passes the non-period filters.
+  // The period filter for invoices is applied on their due date (not purchase date),
+  // so faturas with vencimento fora do ciclo não entram na listagem.
+  const invoiceGroups = new Map<string, Transaction[]>();
+  const plainTransactions: Transaction[] = [];
+  for (const t of transactions) {
+    if (t.deleted_at) continue;
+    if (!matchesAllFilters(t)) continue;
+    if (t.invoiceId) {
+      const arr = invoiceGroups.get(t.invoiceId) || [];
+      arr.push(t);
+      invoiceGroups.set(t.invoiceId, arr);
+    } else {
+      plainTransactions.push(t);
+    }
+  }
+  const invoiceRows = [...invoiceGroups.entries()].map(([invId, txs]) => {
+    const { year, month } = parseInvoiceId(invId);
+    const card = creditCards.find(c => c.id === txs[0].creditCardId);
+    const invoice = invoices.find(i => i.id === invId);
+    const dueDate = invoice?.dueDate
+      ?? (card ? dueDateFor(card, year, month) : `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`);
+    return { invoiceId: invId, txs, card, invoice, dueDate };
   });
+
+  // Filter plain transactions by their own date, invoices by their due date.
+  const filteredPlain = plainTransactions.filter(t => matchesPeriodDate(t.date));
+  const filteredInvoiceRows = invoiceRows.filter(row => matchesPeriodDate(row.dueDate));
+
+  // Combined list sorted by date so invoices appear on their due date.
+  const tableRows: Array<
+    { kind: 'tx'; tx: Transaction; date: string }
+    | { kind: 'invoice'; row: typeof filteredInvoiceRows[number]; date: string }
+  > = [
+    ...filteredPlain.map(tx => ({ kind: 'tx' as const, tx, date: tx.date })),
+    ...filteredInvoiceRows.map(row => ({ kind: 'invoice' as const, row, date: row.dueDate })),
+  ];
+  tableRows.sort((a, b) => a.date.localeCompare(b.date));
+
+  /**
+   * Saldo do cartão/conta: compras no cartão (includeInBalanceSum=false) e
+   * transações de pagamento de fatura NÃO debitam individualmente. A fatura
+   * contabiliza todas elas e apenas o valor da fatura é retirado do saldo.
+   */
+  const computeAccountBalanceAt = (accountId: string, anchor: { txId?: string; invoiceId?: string }): number => {
+    const events: { date: string; signed: number; ref?: string }[] = [];
+    for (const tx of transactions) {
+      if (tx.accountId !== accountId || tx.deleted_at) continue;
+      if (tx.includeInBalanceSum === false) continue;
+      if (tx.type === 'invoice_payment') continue;
+      events.push({ date: tx.date, signed: tx.type === 'income' ? tx.amount : -tx.amount, ref: tx.id });
+    }
+    for (const inv of invoices) {
+      if (inv.totalAmount <= 0) continue;
+      const card = creditCards.find(c => c.id === inv.creditCardId);
+      if (!card || card.accountId !== accountId) continue;
+      events.push({ date: inv.dueDate, signed: -inv.totalAmount, ref: `inv:${inv.id}` });
+    }
+    events.sort((a, b) => a.date.localeCompare(b.date));
+    let balance = 0;
+    for (const ev of events) {
+      balance += ev.signed;
+      if (anchor.invoiceId && ev.ref === `inv:${anchor.invoiceId}`) return balance;
+      if (anchor.txId && ev.ref === anchor.txId) return balance;
+    }
+    return balance;
+  };
+
+  const renderTransactionCells = (t: Transaction, showSaldo = true) => {
+    const member = familyMembers.find(m => m.id === t.memberId);
+    const account = accounts.find(a => a.id === t.accountId);
+    const categoryObj = categories.find(c => c.name === t.category);
+    return (
+      <>
+        {/* Date */}
+        <td className="px-6 py-4 text-xs font-semibold text-slate-600 whitespace-nowrap">
+          {new Date(t.date).toLocaleDateString('pt-BR')}
+        </td>
+        {/* Description / Notes */}
+        <td className="px-6 py-4">
+          <div className="space-y-1">
+            <span className="text-xs font-bold text-slate-800 block">
+              {t.notes || t.category}
+            </span>
+            {/* Tags block */}
+            {(() => {
+              const txTagNames = resolveTxTagNames(t.tagIds, allTags);
+              if (txTagNames.length === 0) return null;
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {txTagNames.map((tagName, i) => (
+                    <span key={i} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-600 text-[9px] font-semibold">
+                      <Tag size={8} /> {tagName}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
+            {/* Attachment Indicator */}
+            {t.attachmentNames && t.attachmentNames.length > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] text-indigo-500 font-semibold bg-indigo-50/40 px-1.5 py-0.5 rounded">
+                <Paperclip size={10} /> {t.attachmentNames[0]}
+              </span>
+            )}
+          </div>
+        </td>
+        {/* Member */}
+        <td className="px-6 py-4 whitespace-nowrap">
+          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50 text-[10px] font-bold text-slate-600 border border-slate-100">
+            <User size={10} /> {member?.name || 'Geral'}
+          </span>
+        </td>
+        {/* Account */}
+        <td className="px-6 py-4 whitespace-nowrap">
+          <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${account?.color || 'bg-slate-500'}`} />
+            {account?.name || 'N/A'}
+          </span>
+        </td>
+        {/* Category */}
+        <td className="px-6 py-4 whitespace-nowrap">
+          <div className="space-y-0.5">
+            <span 
+              className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold text-white"
+              style={{ backgroundColor: categoryObj?.color || '#3B82F6' }}
+            >
+              {t.category}
+            </span>
+            {t.subcategory && (
+              <span className="text-[10px] text-slate-400 font-semibold block ml-1">
+                &bull; {t.subcategory}
+              </span>
+            )}
+          </div>
+        </td>
+        {/* Recurrence */}
+        <td className="px-6 py-4 whitespace-nowrap text-xs font-medium text-slate-500">
+          {t.recurring === 'none' && 'Única'}
+          {t.recurring === 'weekly' && 'Semanal'}
+          {t.recurring === 'monthly' && 'Mensal'}
+          {t.recurring === 'yearly' && 'Anual'}
+        </td>
+        {/* Amount */}
+        <td className="px-6 py-4 whitespace-nowrap">
+          <span className={`text-xs font-bold ${
+            t.type === 'income' ? 'text-emerald-600' : 'text-slate-800'
+          }`}>
+            {t.type === 'income' ? '+' : '-'} R$ {t.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </span>
+        </td>
+        {/* Saldo Pós-Transação */}
+        <td className="px-6 py-4 whitespace-nowrap">
+          {showSaldo ? (
+            (() => {
+              const acc = accounts.find(a => a.id === t.accountId);
+              if (!acc) return <span className="text-xs text-slate-400">N/A</span>;
+              const balance = computeAccountBalanceAt(t.accountId, { txId: t.id });
+              return (
+                <span className={`text-xs font-bold ${balance >= 0 ? 'text-slate-800' : 'text-rose-600'}`}>
+                  R$ {balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
+              );
+            })()
+          ) : (
+            <span className="text-xs text-slate-300">&mdash;</span>
+          )}
+        </td>
+        {/* Actions */}
+        <td className="px-6 py-4 whitespace-nowrap text-right">
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => handleOpenEditForm(t)}
+              className="p-1.5 rounded-lg bg-slate-50 border border-slate-100 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-100 transition-colors cursor-pointer"
+              title="Editar"
+              id={`edit-tx-btn-${t.id}`}
+            >
+              <Edit2 size={13} />
+            </button>
+            <button
+              onClick={() => handleDeleteClick(t.id, t.recurring !== 'none')}
+              className="p-1.5 rounded-lg bg-slate-50 border border-slate-100 text-rose-600 hover:bg-rose-50 hover:border-rose-100 transition-colors cursor-pointer"
+              title="Excluir"
+              id={`delete-tx-btn-${t.id}`}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+        </td>
+      </>
+    );
+  };
 
   // Selected Category Object to list correct subcategories
   const selectedCategoryObj = categories.find(c => c.name === category);
+
+  // Selected credit card & invoice options for the form
+  const selectedCardObj = creditCards.find(c => c.id === creditCardId);
+  const cardInvoiceOptions = Array.from(new Set([
+    ...invoices.filter(i => i.creditCardId === creditCardId).map(i => i.id),
+    invoiceId,
+  ].filter(Boolean)));
+  const invoiceOptionLabel = (invId: string) => {
+    const { year: iy, month: im } = parseInvoiceId(invId);
+    const mName = new Date(iy, im - 1, 1).toLocaleDateString('pt-BR', { month: 'short' });
+    return `Fatura ${mName}/${iy}`;
+  };
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden" id="tx-manager-container">
@@ -272,6 +588,13 @@ export default function TransactionsManager({
         </button>
       </div>
 
+      {/* Period Selector */}
+      <PeriodSelector
+        pref={periodPref}
+        onApply={handlePeriodApply}
+        onSaveDefault={handlePeriodSaveDefault}
+      />
+
       {/* Advanced Filter Panel */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm space-y-4">
         <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
@@ -289,7 +612,7 @@ export default function TransactionsManager({
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Ex: Supermercado, bônus, Pedro..."
+                placeholder="Descrição, categoria, tags..."
                 className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
                 id="search-input-field"
               />
@@ -330,17 +653,64 @@ export default function TransactionsManager({
           {/* Account Filter */}
           <div className="space-y-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase">Conta de Origem/Destino</label>
-            <select
-              value={filterAccount}
-              onChange={(e) => setFilterAccount(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
-              id="filter-account-select"
-            >
-              <option value="all">Todas as contas</option>
-              {accounts.map(a => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
+            <div className="relative">
+              <div 
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 cursor-pointer"
+                onClick={() => setAccountFilterOpen(!accountFilterOpen)}
+              >
+                <div className="flex items-center justify-between">
+                  <span>
+                    {filterAccount.length === 0 
+                      ? 'Todas as contas' 
+                      : filterAccount.map(id => accounts.find(a => a.id === id)?.name).filter(Boolean).join(', ')}
+                  </span>
+                  <span className="text-slate-400">{accountFilterOpen ? '▲' : '▼'}</span>
+                </div>
+              </div>
+              {accountFilterOpen && (
+                <div className="absolute z-10 w-full max-h-60 overflow-y-auto mt-1 bg-white border border-slate-200 rounded-xl shadow-lg">
+                  <div className="p-2 border-b border-slate-100">
+                    <input
+                      type="text"
+                      placeholder="Buscar conta..."
+                      value={accountFilterSearch}
+                      onChange={(e) => setAccountFilterSearch(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <label className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterAccount.length === 0}
+                        onChange={() => setFilterAccount([])}
+                        className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                      />
+                      <span className="text-xs text-slate-700">Todas as contas</span>
+                    </label>
+                    {accounts
+                      .filter(a => a.name.toLowerCase().includes(accountFilterSearch.toLowerCase()))
+                      .map(a => (
+                        <label key={a.id} className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={filterAccount.includes(a.id)}
+                            onChange={(e) => setFilterAccount(e.target.checked 
+                              ? [...filterAccount, a.id] 
+                              : filterAccount.filter(id => id !== a.id)
+                            )}
+                            className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                          />
+                          <span className="text-xs text-slate-700 flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: a.color }} />
+                            {a.name}
+                          </span>
+                        </label>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Member Filter */}
@@ -390,7 +760,7 @@ export default function TransactionsManager({
                 setSearchTerm('');
                 setFilterType('all');
                 setFilterCategory('all');
-                setFilterAccount('all');
+                setFilterAccount([]);
                 setFilterMember('all');
                 setFilterStartDate('');
                 setFilterEndDate('');
@@ -407,11 +777,11 @@ export default function TransactionsManager({
       {/* Transactions Grid/Table */}
       <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/20">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transações Encontradas ({filteredTransactions.length})</h3>
+          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transações Encontradas ({tableRows.length})</h3>
           <span className="text-xs text-slate-400 font-semibold">Mostrando itens filtrados</span>
         </div>
 
-        {filteredTransactions.length === 0 ? (
+        {tableRows.length === 0 ? (
           <div className="text-center py-16 text-slate-400">
             <AlertCircle size={36} className="mx-auto text-slate-300 mb-2" />
             <p className="text-sm font-semibold">Nenhuma transação atende aos filtros atuais.</p>
@@ -429,111 +799,103 @@ export default function TransactionsManager({
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Categoria / Subcat</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Frequência</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor</th>
+                  <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Saldo Pós-Transação</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredTransactions.map((t) => {
-                  const member = familyMembers.find(m => m.id === t.memberId);
-                  const account = accounts.find(a => a.id === t.accountId);
-                  const categoryObj = categories.find(c => c.name === t.category);
-
+                {tableRows.map((entry) => {
+                  if (entry.kind === 'tx') {
+                    const t = entry.tx;
+                    return (
+                      <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
+                        {renderTransactionCells(t)}
+                      </tr>
+                    );
+                  }
+                  const row = entry.row;
+                  const isOpen = expandedInvoiceId === row.invoiceId;
+                  const { year, month } = parseInvoiceId(row.invoiceId);
+                  const monthName = new Date(year, month - 1, 1).toLocaleDateString('pt-BR', { month: 'short' });
+                  const total = row.invoice?.totalAmount ?? row.txs.reduce((s, tx) => s + tx.amount, 0);
+                  const statusLabel = row.invoice ? invoiceStatusLabel[row.invoice.status] : 'Aberta';
+                  const acc = accounts.find(a => a.id === (row.card?.accountId || row.txs[0]?.accountId));
+                  const member = familyMembers.find(m => m.id === row.txs[0]?.memberId);
+                  const invoiceBalance = computeAccountBalanceAt(acc?.id || '', { invoiceId: row.invoiceId });
                   return (
-                    <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                      {/* Date */}
-                      <td className="px-6 py-4 text-xs font-semibold text-slate-600 whitespace-nowrap">
-                        {new Date(t.date).toLocaleDateString('pt-BR')}
-                      </td>
-                      {/* Description / Notes */}
-                      <td className="px-6 py-4">
-                        <div className="space-y-1">
-                          <span className="text-xs font-bold text-slate-800 block">
-                            {t.notes || t.category}
-                          </span>
-                          {/* Tags block */}
-                          {t.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                              {t.tags.map((tag, i) => (
-                                <span key={i} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-600 text-[9px] font-semibold">
-                                  <Tag size={8} /> {tag}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {/* Attachment Indicator */}
-                          {t.attachmentName && (
-                            <span className="inline-flex items-center gap-1 text-[10px] text-indigo-500 font-semibold bg-indigo-50/40 px-1.5 py-0.5 rounded">
-                              <Paperclip size={10} /> {t.attachmentName}
+                    <React.Fragment key={row.invoiceId}>
+                      <tr
+                        className="bg-indigo-50/40 border-b border-slate-100 cursor-pointer hover:bg-indigo-50/60 transition-colors"
+                        onClick={() => setExpandedInvoiceId(isOpen ? null : row.invoiceId)}
+                      >
+                        {/* Date (vencimento) */}
+                        <td className="px-6 py-4 text-xs font-semibold text-slate-600 whitespace-nowrap">
+                          {new Date(row.dueDate).toLocaleDateString('pt-BR')}
+                        </td>
+                        {/* Description: Fatura <card> */}
+                        <td className="px-6 py-4">
+                          <div className="space-y-1">
+                            <span className="text-xs font-bold text-indigo-700 block uppercase tracking-wider flex items-center gap-2">
+                              <CreditCard size={12} className="text-indigo-500" />
+                              Fatura {row.card?.name?.toUpperCase() || 'Cartão'}
                             </span>
-                          )}
-                        </div>
-                      </td>
-                      {/* Member */}
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50 text-[10px] font-bold text-slate-600 border border-slate-100">
-                          <User size={10} /> {member?.name || 'Geral'}
-                        </span>
-                      </td>
-                      {/* Account */}
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                          <span className={`w-2 h-2 rounded-full ${account?.color || 'bg-slate-500'}`} />
-                          {account?.name || 'N/A'}
-                        </span>
-                      </td>
-                      {/* Category */}
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="space-y-0.5">
-                          <span 
-                            className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold text-white"
-                            style={{ backgroundColor: categoryObj?.color || '#3B82F6' }}
-                          >
-                            {t.category}
-                          </span>
-                          {t.subcategory && (
-                            <span className="text-[10px] text-slate-400 font-semibold block ml-1">
-                              &bull; {t.subcategory}
+                            <span className="text-[10px] font-semibold text-slate-400">
+                              {monthName}/{year} &bull; {statusLabel}
                             </span>
-                          )}
-                        </div>
-                      </td>
-                      {/* Recurrence */}
-                      <td className="px-6 py-4 whitespace-nowrap text-xs font-medium text-slate-500">
-                        {t.recurring === 'none' && 'Única'}
-                        {t.recurring === 'weekly' && 'Semanal'}
-                        {t.recurring === 'monthly' && 'Mensal'}
-                        {t.recurring === 'yearly' && 'Anual'}
-                      </td>
-                      {/* Amount */}
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`text-xs font-bold ${
-                          t.type === 'income' ? 'text-emerald-600' : 'text-slate-800'
-                        }`}>
-                          {t.type === 'income' ? '+' : '-'} R$ {t.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                        </span>
-                      </td>
-                      {/* Actions */}
-                      <td className="px-6 py-4 whitespace-nowrap text-right">
-                        <div className="flex items-center justify-end gap-2">
+                          </div>
+                        </td>
+                        {/* Member */}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50 text-[10px] font-bold text-slate-600 border border-slate-100">
+                            <User size={10} /> {member?.name || 'Geral'}
+                          </span>
+                        </td>
+                        {/* Account */}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full ${acc?.color || 'bg-slate-500'}`} />
+                            {acc?.name || 'N/A'}
+                          </span>
+                        </td>
+                        {/* Category */}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold text-white bg-indigo-600">
+                            Fatura
+                          </span>
+                        </td>
+                        {/* Recurrence */}
+                        <td className="px-6 py-4 whitespace-nowrap text-xs font-medium text-slate-500">
+                          Única
+                        </td>
+                        {/* Amount: fatura sai da conta */}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="text-xs font-bold text-slate-800">
+                            - R$ {total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </span>
+                        </td>
+                        {/* Saldo Pós-Transação: saldo menos valor da fatura */}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`text-xs font-bold ${invoiceBalance >= 0 ? 'text-slate-800' : 'text-rose-600'}`}>
+                            R$ {invoiceBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </span>
+                        </td>
+                        {/* Actions */}
+                        <td className="px-6 py-4 whitespace-nowrap text-right">
                           <button
-                            onClick={() => handleOpenEditForm(t)}
-                            className="p-1.5 rounded-lg bg-slate-50 border border-slate-100 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-100 transition-colors cursor-pointer"
-                            title="Editar"
-                            id={`edit-tx-btn-${t.id}`}
+                            onClick={() => setExpandedInvoiceId(isOpen ? null : row.invoiceId)}
+                            className="p-1.5 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 hover:bg-indigo-100 transition-colors cursor-pointer"
+                            aria-label={isOpen ? 'Recolher fatura' : 'Expandir fatura'}
                           >
-                            <Edit2 size={13} />
+                            {isOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                           </button>
-                          <button
-                            onClick={() => handleDeleteClick(t.id, t.recurring !== 'none')}
-                            className="p-1.5 rounded-lg bg-slate-50 border border-slate-100 text-rose-600 hover:bg-rose-50 hover:border-rose-100 transition-colors cursor-pointer"
-                            title="Excluir"
-                            id={`delete-tx-btn-${t.id}`}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+                      {isOpen && row.txs.map((t) => (
+                        <tr key={t.id} className="bg-indigo-50/10 hover:bg-slate-50/50 transition-colors">
+                          {renderTransactionCells(t, false)}
+                        </tr>
+                      ))}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -774,6 +1136,60 @@ export default function TransactionsManager({
                   </select>
                 </div>
               </div>
+
+              {/* Credit Card Purchase */}
+              {type === 'expense' && creditCards.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cartão de Crédito (compras no crédito)</label>
+                  <select
+                    value={creditCardId}
+                    onChange={(e) => setCreditCardId(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                    id="tx-form-credit-card"
+                  >
+                    <option value="">Sem cartão (débito / dinheiro)</option>
+                    {creditCards.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {creditCardId && selectedCardObj && (
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Invoice */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fatura</label>
+                    <select
+                      value={invoiceId}
+                      onChange={(e) => setInvoiceId(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                      id="tx-form-invoice"
+                    >
+                      {cardInvoiceOptions.map(invId => (
+                        <option key={invId} value={invId}>{invoiceOptionLabel(invId)}</option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 font-medium">
+                      Atribuída automaticamente pela data e fechamento do cartão.
+                    </p>
+                  </div>
+
+                  {/* Installments */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Parcelas</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="48"
+                      value={installments}
+                      onChange={(e) => setInstallments(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-semibold focus:outline-none focus:border-indigo-500 transition-colors"
+                      id="tx-form-installments"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Recurrence Selection */}
               <div className="space-y-1.5">

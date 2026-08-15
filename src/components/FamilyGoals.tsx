@@ -10,19 +10,31 @@ import {
   MinusCircle, 
   Calendar, 
   TrendingUp,
-  Award
+  Award,
+  AlertTriangle,
+  RefreshCcw,
+  Wallet,
+  CalendarClock,
+  Lightbulb,
+  ChevronDown
 } from 'lucide-react';
-import { Goal } from '../types';
+import { Goal, Category, FamilyMember, Account } from '../types';
 
 interface FamilyGoalsProps {
   goals: Goal[];
+  categories: Category[];
+  familyMembers: FamilyMember[];
+  accounts?: Account[];
   onAddGoal: (goal: Omit<Goal, 'id'>) => void;
   onEditGoal: (id: string, goal: Partial<Goal>) => void;
-  onDeleteGoal: (id: string) => void;
+  onDeleteGoal: (id: string, revertTransactions: boolean) => void;
 }
 
 export default function FamilyGoals({
   goals,
+  categories,
+  familyMembers,
+  accounts = [],
   onAddGoal,
   onEditGoal,
   onDeleteGoal
@@ -30,6 +42,8 @@ export default function FamilyGoals({
   // UI States
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isContribModalOpen, setIsContribModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [goalToDelete, setGoalToDelete] = useState<Goal | null>(null);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
   const [contribType, setContribType] = useState<'deposit' | 'withdraw'>('deposit');
 
@@ -39,9 +53,14 @@ export default function FamilyGoals({
   const [currentAmount, setCurrentAmount] = useState('');
   const [deadline, setDeadline] = useState('');
   const [color, setColor] = useState('#4F46E5'); // indigo-600
+  const [categoryId, setCategoryId] = useState('');
+  const [monthlyContribution, setMonthlyContribution] = useState('');
+  const [accountId, setAccountId] = useState('');
 
   // Contribution Form Fields
   const [contribAmount, setContribAmount] = useState('');
+  const [contribMemberId, setContribMemberId] = useState('');
+  const [expandedLedger, setExpandedLedger] = useState<string | null>(null);
 
   // Validation States
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -58,6 +77,10 @@ export default function FamilyGoals({
     { value: '#6B7280', label: 'Cinza' }
   ];
 
+  // Contas onde o valor reservado da meta pode ficar (dinheiro, banco ou investimento)
+  const goalAccounts = accounts.filter(a => a.type !== 'credit');
+  const accountById = (id?: string) => accounts.find(a => a.id === id);
+
   // Open Form for Adding Goal
   const handleOpenAddForm = () => {
     setSelectedGoal(null);
@@ -66,6 +89,9 @@ export default function FamilyGoals({
     setCurrentAmount('0');
     setDeadline(new Date(new Date().getFullYear(), 11, 31).toISOString().split('T')[0]); // End of year default
     setColor('#3B82F6');
+    setCategoryId('cat_investimentos');
+    setMonthlyContribution('');
+    setAccountId(goalAccounts[0]?.id || '');
     setValidationError(null);
     setIsFormModalOpen(true);
   };
@@ -78,6 +104,9 @@ export default function FamilyGoals({
     setCurrentAmount(g.currentAmount.toString());
     setDeadline(g.deadline);
     setColor(g.color);
+    setCategoryId(g.categoryId || '');
+    setMonthlyContribution(g.monthlyContribution ? String(g.monthlyContribution) : '');
+    setAccountId(g.accountId || '');
     setValidationError(null);
     setIsFormModalOpen(true);
   };
@@ -87,6 +116,7 @@ export default function FamilyGoals({
     setSelectedGoal(g);
     setContribType(type);
     setContribAmount('');
+    setContribMemberId(familyMembers[0]?.id || '');
     setValidationError(null);
     setIsContribModalOpen(true);
   };
@@ -114,19 +144,38 @@ export default function FamilyGoals({
       setValidationError('A data de prazo final é inválida.');
       return;
     }
+    if (!accountId) {
+      setValidationError('Selecione a conta onde o valor reservado ficará guardado.');
+      return;
+    }
 
     const goalData = {
       name,
       targetAmount: parsedTarget,
       currentAmount: parsedCurrent,
       deadline,
-      color
+      color,
+      categoryId: categoryId || undefined,
+      accountId: accountId || undefined,
+      monthlyContribution: monthlyContribution ? parseFloat(monthlyContribution) : undefined
     };
 
     if (selectedGoal) {
       onEditGoal(selectedGoal.id, goalData);
     } else {
-      onAddGoal(goalData);
+      onAddGoal(
+        parsedCurrent > 0
+          ? {
+              ...goalData,
+              contributions: [{
+                memberId: 'mem_geral',
+                amount: parsedCurrent,
+                date: new Date().toISOString().split('T')[0],
+                type: 'deposit'
+              }]
+            }
+          : goalData
+      );
     }
 
     setIsFormModalOpen(false);
@@ -154,7 +203,18 @@ export default function FamilyGoals({
       newAmount -= parsedContrib;
     }
 
-    onEditGoal(selectedGoal.id, { currentAmount: newAmount });
+    const contribution = {
+      memberId: contribMemberId || 'mem_geral',
+      amount: parsedContrib,
+      date: new Date().toISOString().split('T')[0],
+      type: contribType
+    };
+    const existing = selectedGoal.contributions || [];
+
+    onEditGoal(selectedGoal.id, {
+      currentAmount: newAmount,
+      contributions: [...existing, contribution]
+    });
     setIsContribModalOpen(false);
   };
 
@@ -163,6 +223,50 @@ export default function FamilyGoals({
     const diff = new Date(deadlineStr).getTime() - new Date().getTime();
     const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
     return days > 0 ? `${days} dias restantes` : 'Prazo esgotado';
+  };
+
+  // 1.5 Required monthly contribution and deadline viability
+  const getMonthsRemaining = (deadlineStr: string) => {
+    const now = new Date();
+    const end = new Date(deadlineStr);
+    const months = (end.getFullYear() - now.getFullYear()) * 12 + (end.getMonth() - now.getMonth());
+    return Math.max(months, 0);
+  };
+
+  const getGoalPlanning = (g: Goal) => {
+    const remaining = g.targetAmount - g.currentAmount;
+    const months = getMonthsRemaining(g.deadline);
+    const required = months > 0 ? remaining / months : remaining;
+
+    if (remaining <= 0) {
+      return { feasible: true, monthsNeeded: 0, required, message: 'Meta concluída!' };
+    }
+
+    const pace = g.monthlyContribution || 0;
+    if (pace > 0) {
+      const monthsNeeded = Math.ceil(remaining / pace);
+      return {
+        feasible: monthsNeeded <= months,
+        monthsNeeded,
+        required,
+        message: monthsNeeded <= months
+          ? `Viável: com R$ ${pace.toFixed(2)}/mês, conclui em ~${monthsNeeded} mes(es).`
+          : `Inviável no prazo: ao ritmo atual (R$ ${pace.toFixed(2)}/mês) levará ~${monthsNeeded} mes(es); faltam ${months}.`
+      };
+    }
+
+    return {
+      feasible: true,
+      monthsNeeded: 0,
+      required,
+      message: `Aporte recomendado de R$ ${required.toFixed(2)}/mês até o prazo.`
+    };
+  };
+
+  // Open Delete confirmation modal
+  const handleOpenDeleteModal = (g: Goal) => {
+    setGoalToDelete(g);
+    setIsDeleteModalOpen(true);
   };
 
   return (
@@ -195,6 +299,8 @@ export default function FamilyGoals({
             const pct = Math.round((g.currentAmount / g.targetAmount) * 100);
             const isCompleted = g.currentAmount >= g.targetAmount;
             const remainingToSave = g.targetAmount - g.currentAmount;
+            const planning = getGoalPlanning(g);
+            const goalCat = categories.find(c => c.id === g.categoryId);
 
             return (
               <div 
@@ -224,6 +330,16 @@ export default function FamilyGoals({
                       <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1">
                         <Calendar size={10} /> Alvo: {new Date(g.deadline).toLocaleDateString('pt-BR')}
                       </p>
+                      {goalCat && (
+                        <p className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5 flex items-center gap-1">
+                          <TrendingUp size={9} /> {goalCat.name}
+                        </p>
+                      )}
+                      {accountById(g.accountId) && (
+                        <p className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5 flex items-center gap-1">
+                          <Wallet size={9} /> {accountById(g.accountId)?.name}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -236,11 +352,7 @@ export default function FamilyGoals({
                       <Edit2 size={12} />
                     </button>
                     <button
-                      onClick={() => {
-                        if (window.confirm('Excluir esta meta? Seus saldos salvos serão removidos de visualização.')) {
-                          onDeleteGoal(g.id);
-                        }
-                      }}
+                      onClick={() => handleOpenDeleteModal(g)}
                       className="p-1 rounded hover:bg-slate-50 hover:text-rose-600 transition-colors cursor-pointer"
                       id={`delete-goal-btn-${g.id}`}
                     >
@@ -281,6 +393,24 @@ export default function FamilyGoals({
                   </div>
                 </div>
 
+                {/* 1.5 Required contribution + deadline viability */}
+                {!isCompleted && (
+                  <div className={`p-2.5 rounded-xl border text-[10px] font-semibold ${
+                    planning.feasible
+                      ? 'bg-indigo-50/60 border-indigo-100 text-indigo-700'
+                      : 'bg-rose-50 border-rose-100 text-rose-700'
+                  }`}>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Lightbulb size={12} className={planning.feasible ? 'text-indigo-500' : 'text-rose-500'} />
+                      <span className="font-extrabold uppercase tracking-wider">Planejamento da Meta</span>
+                    </div>
+                    <p className="leading-snug">{planning.message}</p>
+                    {!planning.feasible && (
+                      <p className="mt-1 text-[9px] opacity-80">Aporte necessário até o prazo: R$ {planning.required.toFixed(2)}/mês</p>
+                    )}
+                  </div>
+                )}
+
                 {/* Quick contribute controls */}
                 <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-50">
                   <button
@@ -298,6 +428,40 @@ export default function FamilyGoals({
                     <MinusCircle size={14} className="text-rose-500" /> Resgatar
                   </button>
                 </div>
+
+                {/* 5.3 Contributions ledger (extrato por membro) */}
+                {(g.contributions || []).length > 0 && (
+                  <div className="border-t border-slate-50 pt-2">
+                    <button
+                      onClick={() => setExpandedLedger(expandedLedger === g.id ? null : g.id)}
+                      className="w-full flex items-center justify-between text-[10px] font-bold text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer"
+                      id={`goal-ledger-toggle-${g.id}`}
+                    >
+                      <span className="flex items-center gap-1">
+                        <Wallet size={10} /> Extrato de aportes ({g.contributions!.length})
+                      </span>
+                      <ChevronDown size={11} className={`transition-transform ${expandedLedger === g.id ? 'rotate-180' : ''}`} />
+                    </button>
+                    {expandedLedger === g.id && (
+                      <div className="mt-1.5 max-h-32 overflow-y-auto space-y-1 pr-1">
+                        {g.contributions!.slice().reverse().map((c, i) => {
+                          const member = familyMembers.find(m => m.id === c.memberId);
+                          return (
+                            <div key={i} className="flex items-center justify-between text-[10px] py-0.5">
+                              <span className="text-slate-600 font-semibold">
+                                {member?.name || 'Membro'}
+                                <span className="text-slate-400 font-medium"> · {new Date(c.date + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                              </span>
+                              <span className={`font-extrabold ${c.type === 'deposit' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {c.type === 'deposit' ? '+' : '-'} R$ {c.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })
@@ -412,6 +576,56 @@ export default function FamilyGoals({
                 </div>
               </div>
 
+              {/* Category and monthly contribution */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase">Categoria Associada</label>
+                  <select
+                    value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors bg-white"
+                  >
+                    <option value="">Sem categoria</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase">Contribuição Automática (R$/mês)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={monthlyContribution}
+                    onChange={(e) => setMonthlyContribution(e.target.value)}
+                    placeholder="Ex: 500"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-[9px] text-slate-400">Regra opcional usada para avaliar a viabilidade do prazo.</p>
+                </div>
+              </div>
+
+              {/* Linked account where the reserved money is kept */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase">Conta do Valor Reservado*</label>
+                <select
+                  required
+                  value={accountId}
+                  onChange={(e) => setAccountId(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors bg-white"
+                >
+                  <option value="" disabled>Selecione a conta (investimento, banco ou dinheiro)</option>
+                  {goalAccounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name} (R$ {a.balance.toLocaleString('pt-BR')})</option>
+                  ))}
+                </select>
+                <p className="text-[9px] text-slate-400">O valor acumulado da meta fica reservado dentro desta conta — assim o saldo consolidado mostra quanto já está destinado às metas.</p>
+                {goalAccounts.length === 0 && (
+                  <p className="text-[10px] text-amber-600 font-semibold">Cadastre uma conta em Contas &amp; Cartões para vincular o valor da meta.</p>
+                )}
+              </div>
+
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -468,6 +682,23 @@ export default function FamilyGoals({
             )}
 
             <form onSubmit={handleContribSubmit} className="space-y-4">
+              {/* Contributing Member */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase">Membro Responsável</label>
+                <select
+                  value={contribMemberId}
+                  onChange={(e) => setContribMemberId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors bg-white"
+                  id="contrib-form-member"
+                >
+                  {familyMembers.map(m => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                  {familyMembers.length === 0 && <option value="">Sem membros cadastrados</option>}
+                </select>
+                <p className="text-[9px] text-slate-400">A participação fica registrada no extrato da meta para o relatório por membro.</p>
+              </div>
+
               {/* Contribution Amount */}
               <div className="space-y-1">
                 <label className="text-[11px] font-bold text-slate-400 uppercase">
@@ -511,6 +742,53 @@ export default function FamilyGoals({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 1.5 Delete confirmation modal — what to do with accumulated values */}
+      {isDeleteModalOpen && goalToDelete && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4" id="delete-goal-modal-container">
+            <div className="flex items-center gap-2 text-rose-500 border-b border-slate-100 pb-2">
+              <AlertTriangle size={18} />
+              <h3 className="text-sm font-display font-extrabold">Excluir Meta "{goalToDelete.name}"</h3>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Esta meta possui <span className="font-bold text-slate-900">R$ {goalToDelete.currentAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span> acumulados. O que deseja fazer com esses valores?
+            </p>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button
+                onClick={() => {
+                  onDeleteGoal(goalToDelete.id, false);
+                  setIsDeleteModalOpen(false);
+                  setGoalToDelete(null);
+                }}
+                className="w-full px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                id="delete-goal-keep-btn"
+              >
+                <Wallet size={13} /> Manter valores nos saldos das contas
+              </button>
+              <button
+                onClick={() => {
+                  onDeleteGoal(goalToDelete.id, true);
+                  setIsDeleteModalOpen(false);
+                  setGoalToDelete(null);
+                }}
+                className="w-full px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                id="delete-goal-revert-btn"
+              >
+                <RefreshCcw size={13} /> Reverter lançamentos históricos (estorno do valor)
+              </button>
+              <button
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="w-full px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
           </div>
         </div>
       )}

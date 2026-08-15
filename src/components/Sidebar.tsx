@@ -27,6 +27,8 @@ interface SidebarProps {
   isCollapsed: boolean;
   setIsCollapsed: (collapsed: boolean) => void;
   totalBalance: number;
+  isPrivateMode?: boolean;
+  onTogglePrivateMode?: () => void;
   currentUser?: User | null;
   onOpenAuthModal?: () => void;
   onSignOut?: () => void;
@@ -37,7 +39,9 @@ export default function Sidebar({
   setActiveView, 
   isCollapsed, 
   setIsCollapsed,
-  totalBalance
+  totalBalance,
+  isPrivateMode = false,
+  onTogglePrivateMode
 }: SidebarProps) {
   const [isOpenMobile, setIsOpenMobile] = React.useState(false);
 
@@ -53,9 +57,9 @@ export default function Sidebar({
     { id: 'budgets', label: 'Orçamentos', icon: PiggyBank },
     { id: 'goals', label: 'Metas Familiar', icon: Target },
     { id: 'family', label: 'Membros da Família', icon: Users },
-    { id: 'reports', label: 'Relatórios Avançados', icon: BarChart3, isPro: true },
-    { id: 'premium-features', label: 'Recursos Premium', icon: Crown, highlight: true, isPro: true },
-    { id: 'ai-advisor', label: 'Serenity AI Advisor', icon: Sparkles, highlight: true, isPro: true },
+    { id: 'reports', label: 'Relatórios Avançados', icon: BarChart3 },
+    { id: 'premium-features', label: 'Recursos Premium', icon: Crown },
+    { id: 'ai-advisor', label: 'Serenity AI Advisor', icon: Sparkles },
   ];
 
   return (
@@ -100,7 +104,6 @@ export default function Sidebar({
                   <span className="font-display font-extrabold text-slate-900 text-lg tracking-tight whitespace-nowrap block leading-tight">
                     Family<span className="text-indigo-600">Finance</span>
                   </span>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Pro Version</span>
                 </div>
               )}
             </div>
@@ -126,7 +129,7 @@ export default function Sidebar({
                   <TrendingDown size={16} className="text-rose-500 shrink-0" />
                 )}
                 <span className={`text-base font-extrabold tracking-tight truncate ${totalBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>
-                  R$ {totalBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  {isPrivateMode ? 'R$ ***' : `R$ ${totalBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
                 </span>
               </div>
             </div>
@@ -149,12 +152,8 @@ export default function Sidebar({
                   className={`
                     w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all duration-150 relative group cursor-pointer
                     ${isActive 
-                      ? item.highlight 
-                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100'
-                        : 'bg-indigo-50/80 text-indigo-700 font-bold'
-                      : item.highlight
-                        ? 'text-indigo-600 bg-indigo-50/30 hover:bg-indigo-50/70 border border-dashed border-indigo-200'
-                        : 'text-slate-600 hover:text-slate-950 hover:bg-slate-100/70'
+                      ? 'bg-indigo-50/80 text-indigo-700 font-bold'
+                      : 'text-slate-600 hover:text-slate-950 hover:bg-slate-100/70'
                     }
                   `}
                 >
@@ -163,22 +162,13 @@ export default function Sidebar({
                   {(!isCollapsed || isOpenMobile) && (
                     <div className="flex items-center justify-between flex-1 min-w-0 text-left">
                       <span className="truncate">{item.label}</span>
-                      {item.isPro && (
-                        <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-md tracking-wider shrink-0 ml-1 ${
-                          isActive 
-                            ? 'bg-white/20 text-white' 
-                            : 'bg-indigo-100 text-indigo-700'
-                        }`}>
-                          PRO
-                        </span>
-                      )}
                     </div>
                   )}
 
                   {/* Tooltip on collapse */}
                   {isCollapsed && !isOpenMobile && (
                     <div className="absolute left-full ml-4 px-2.5 py-1.5 bg-slate-950 text-white text-[11px] font-bold rounded-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 whitespace-nowrap z-50 shadow-lg">
-                      {item.label} {item.isPro ? '(PRO)' : ''}
+                      {item.label}
                     </div>
                   )}
                 </button>
@@ -188,9 +178,23 @@ export default function Sidebar({
         </div>
 
         {/* System Footer */}
-        {(!isCollapsed || isOpenMobile) && (
-          <div className="p-4 border-t border-slate-200/80 bg-slate-50/50 shrink-0 text-center text-[10px] text-slate-400 font-semibold">
-            FamilyFinance &copy; 2026
+        {(!isCollapsed || isOpenMobile) && onTogglePrivateMode && (
+          <div className="p-4 border-t border-slate-200/80 bg-slate-50/50 shrink-0 space-y-3">
+            <button
+              onClick={onTogglePrivateMode}
+              className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                isPrivateMode
+                  ? 'bg-rose-600 text-white shadow-sm'
+                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+              }`}
+              id="sidebar-private-toggle"
+            >
+              <ShieldCheck size={14} />
+              {isPrivateMode ? 'Modo Privado Ativado' : 'Ativar Modo Privado'}
+            </button>
+            <p className="text-center text-[10px] text-slate-400 font-semibold">
+              FamilyFinance &copy; 2026
+            </p>
           </div>
         )}
       </aside>
