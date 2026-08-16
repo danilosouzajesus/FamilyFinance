@@ -1,0 +1,20 @@
+// Fixtures de teste compartilhados (definidos em @ff/shared).
+export {
+  noop,
+  makeTx,
+  makeCategory,
+  makeSubcategory,
+  makeTag,
+  makeAccount,
+  makeBudget,
+  makeMonthlyGoal,
+  makeGoal,
+  makeMember,
+  makeSubscription,
+  makeDebt,
+  makeInvestment,
+  makeRule,
+  makeNotification,
+  emptyState,
+  sampleState,
+} from '@ff/shared';

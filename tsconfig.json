@@ -15,12 +15,19 @@
     "moduleDetection": "force",
     "allowJs": true,
     "jsx": "react-jsx",
+    "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./client/src/*"],
+      "@ff/shared": ["./shared/src/index.ts"]
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "client/src",
+    "client/vite.config.ts",
+    "server",
+    "shared",
+    "api"
+  ]
 }

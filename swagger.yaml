@@ -1,0 +1,461 @@
+openapi: 3.0.0
+info:
+  title: FamilyFinance API
+  description: Backend do FamilyFinance — conselheiro IA, integração bancária (Pluggy) e caixa de entrada de transações.
+  version: 1.0.0
+servers:
+  - url: /api
+tags:
+  - name: health
+  - name: ai
+  - name: pluggy
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Verifica se o backend está no ar
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  message: { type: string }
+  /ai/advisor:
+    post:
+      tags: [ai]
+      summary: Consulta o conselheiro financeiro com IA (Gemini)
+      description: Sem GEMINI_API_KEY configurada, responde com um fallback offline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [systemState]
+              properties:
+                systemState:
+                  type: object
+                  description: Estado financeiro completo (transactions, accounts, budgets, goals, familyMembers, categories)
+                chatHistory:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string, enum: [user, assistant] }
+                      content: { type: string }
+                userMessage: { type: string }
+      responses:
+        '200':
+          description: Resposta do conselheiro
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text: { type: string }
+                  isOfflineFallback: { type: boolean }
+        '400':
+          description: systemState ausente
+        '500':
+          description: Erro interno
+  /pluggy/config:
+    get:
+      tags: [pluggy]
+      summary: Indica se as chaves da Pluggy estão configuradas
+      responses:
+        '200':
+          description: Configuração
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: { type: boolean }
+                  webhookUrl: { type: string }
+  /pluggy/connect-token:
+    get:
+      tags: [pluggy]
+      summary: Gera um connect token para o widget de conexão bancária
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+        '400':
+          description: Pluggy não configurado
+        '500':
+          description: Erro ao gerar token
+  /pluggy/webhook:
+    post:
+      tags: [pluggy]
+      summary: Recebe eventos da Pluggy (transactions/created, transactions/updated)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event: { type: string }
+                itemId: { type: string }
+                transactionId: { type: string }
+      responses:
+        '200':
+          description: Sempre responde 200 para reconhecer o evento
+  /pluggy/sync:
+    post:
+      tags: [pluggy]
+      summary: Sincroniza transações das conexões (ou usa amostras demo sem chaves)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+        - name: wait
+          in: query
+          schema: { type: string, description: '1 para aguardar o processamento da Pluggy' }
+        - name: accountId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, description: 'Data inicial (YYYY-MM-DD)' }
+      responses:
+        '200':
+          description: Resultado da sincronização
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  synced: { type: integer }
+                  skipped: { type: integer }
+                  pending:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pending' }
+  /pluggy/pending:
+    get:
+      tags: [pluggy]
+      summary: Lista a caixa de entrada (pendências)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Pendências
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Pending' }
+  /pluggy/investments:
+    get:
+      tags: [pluggy]
+      summary: Lista investimentos das conexões (ou amostras demo)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Investimentos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  investments:
+                    type: array
+                    items: { $ref: '#/components/schemas/Investment' }
+  /pluggy/pending/{id}/approve:
+    post:
+      tags: [pluggy]
+      summary: Aprova uma pendência
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                overrides:
+                  type: object
+                  description: categoryId, category, subcategoryId, tagIds, amount, date
+      responses:
+        '200':
+          description: Pendência atualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pending' }
+        '404':
+          description: Pendência não encontrada
+  /pluggy/pending/{id}/reconcile:
+    post:
+      tags: [pluggy]
+      summary: Concilia uma pendência com uma transação existente
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetTransactionId: { type: string }
+      responses:
+        '200':
+          description: Pendência atualizada
+        '404':
+          description: Pendência não encontrada
+  /pluggy/pending/{id}/ignore:
+    post:
+      tags: [pluggy]
+      summary: Ignora uma pendência
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Pendência ignorada
+        '404':
+          description: Pendência não encontrada
+  /pluggy/connections:
+    get:
+      tags: [pluggy]
+      summary: Lista conexões bancárias
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Conexões
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Connection' }
+    post:
+      tags: [pluggy]
+      summary: Cria uma conexão manualmente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemId, connectorName]
+              properties:
+                userId: { type: string }
+                itemId: { type: string }
+                connectorName: { type: string }
+                connectorLogoUrl: { type: string }
+      responses:
+        '200':
+          description: Conexão criada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '400':
+          description: Dados obrigatórios ausentes
+  /pluggy/connections/{itemId}:
+    delete:
+      tags: [pluggy]
+      summary: Remove uma conexão
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Conexão removida
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        '404':
+          description: Conexão não encontrada
+  /pluggy/accounts:
+    get:
+      tags: [pluggy]
+      summary: Lista contas/cartões detectados e seu mapeamento com o app
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Contas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountInfo' }
+  /pluggy/accounts/map:
+    post:
+      tags: [pluggy]
+      summary: Mapeia uma conta Pluggy para uma conta do app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pluggyAccountId, appAccountId]
+              properties:
+                userId: { type: string }
+                pluggyAccountId: { type: string }
+                appAccountId: { type: string }
+      responses:
+        '200':
+          description: Mapeamento salvo
+        '400':
+          description: Dados obrigatórios ausentes
+  /pluggy/demo/generate:
+    post:
+      tags: [pluggy]
+      summary: Gera pendências de exemplo (demo)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Pendências geradas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated: { type: integer }
+                  pending:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pending' }
+  /pluggy/status:
+    get:
+      tags: [pluggy]
+      summary: Diagnóstico interno (configurado? pendências? conexões?)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Diagnóstico
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: { type: boolean }
+                  pending: { type: integer }
+                  connections:
+                    type: array
+                    items: { $ref: '#/components/schemas/Connection' }
+components:
+  schemas:
+    Pending:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        accountId: { type: string }
+        rawDescription: { type: string }
+        amount: { type: number }
+        date: { type: string, format: date }
+        type: { type: string, enum: [expense, income] }
+        paymentMethod: { type: string }
+        pluggyTransactionId: { type: string }
+        pluggyItemId: { type: string }
+        suggestedCategory: { type: string }
+        suggestedSubcategory: { type: string }
+        suggestedTagIds:
+          type: array
+          items: { type: string }
+        aiConfidence: { type: number }
+        suggestedReconcileTransactionId:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [PENDING, APPROVED, RECONCILED, IGNORED]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Connection:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        itemId: { type: string }
+        connectorName: { type: string }
+        connectorLogoUrl:
+          type: string
+          nullable: true
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AccountInfo:
+      type: object
+      properties:
+        pluggyAccountId: { type: string }
+        itemId:
+          type: string
+          nullable: true
+        name: { type: string }
+        subtype: { type: string }
+        mappedAppAccountId:
+          type: string
+          nullable: true
+    Investment:
+      type: object
+      properties:
+        id: { type: string }
+        itemId: { type: string }
+        name: { type: string }
+        type: { type: string }
+        subtype:
+          type: string
+          nullable: true
+        institution:
+          type: string
+          nullable: true
+        amount: { type: number }
+        amountOriginal:
+          type: number
+          nullable: true
+        amountProfit:
+          type: number
+          nullable: true
+        acquisitionDate:
+          type: string
+          format: date
+          nullable: true
+        annualRate:
+          type: number
+          nullable: true
+        monthProfit:
+          type: number
+          nullable: true

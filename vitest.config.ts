@@ -6,14 +6,15 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, '.'),
+      '@': path.resolve(__dirname, 'client/src'),
+      '@ff/shared': path.resolve(__dirname, 'shared/src/index.ts'),
     },
   },
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    setupFiles: ['./client/src/test/setup.ts'],
+    include: ['client/src/**/*.{test,spec}.{ts,tsx}', 'shared/src/**/*.{test,spec}.{ts,tsx}'],
     css: false,
     restoreMocks: true,
     clearMocks: true,
