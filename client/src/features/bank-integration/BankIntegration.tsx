@@ -1185,6 +1185,21 @@ export default function BankIntegration({
               </button>
             </div>
 
+            {!pluggyConfigured && (
+              <div className="p-4 bg-violet-50/80 border border-violet-200/80 rounded-2xl text-xs text-violet-900 space-y-2">
+                <div className="flex items-center gap-2 font-bold text-violet-950">
+                  <Sparkles size={16} className="text-violet-600 shrink-0" />
+                  <span>Chaves de API da Pluggy não configuradas no servidor (Vercel)</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-violet-800 font-medium">
+                  Para conectar bancos e cartões em produção com Open Finance, adicione as variáveis <code className="bg-violet-100/80 px-1.5 py-0.5 rounded text-violet-950 font-mono font-semibold">PLUGGY_CLIENT_ID</code> e <code className="bg-violet-100/80 px-1.5 py-0.5 rounded text-violet-950 font-mono font-semibold">PLUGGY_CLIENT_SECRET</code> no painel da Vercel (<b>Project Settings &gt; Environment Variables</b>) e faça um novo deploy.
+                </p>
+                <p className="text-[11px] leading-relaxed text-violet-800 font-medium">
+                  Você pode usar o <b>Modo Demonstração</b> abaixo para testar a conciliação automática com transações de exemplo agora mesmo.
+                </p>
+              </div>
+            )}
+
             {pluggyNotice && (
               <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800 font-semibold flex items-start gap-2.5">
                 <AlertCircle size={16} className="shrink-0 mt-0.5" />
@@ -1194,14 +1209,14 @@ export default function BankIntegration({
 
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {!pluggyConfigured && (
-              <button
-                type="button"
-                onClick={handleDemoGenerate}
-                disabled={syncing}
-                className="px-3 py-2 bg-violet-100 hover:bg-violet-200 text-violet-700 text-[10px] font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-60"
-              >
-                  {syncing ? <RefreshCw size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                  {syncing ? 'Baixando...' : 'Modo demonstração (sem chave de API)'}
+                <button
+                  type="button"
+                  onClick={handleDemoGenerate}
+                  disabled={syncing}
+                  className="px-4 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 disabled:opacity-60 shadow-sm"
+                >
+                  {syncing ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  {syncing ? 'Gerando dados de teste...' : 'Gerar Transações no Modo Demonstração'}
                 </button>
               )}
 
