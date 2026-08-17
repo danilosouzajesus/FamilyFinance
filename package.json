@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @ff/server",
-    "build": "npm run build -w @ff/client && npm run build -w @ff/server",
+    "build": "npm run build -w @ff/client && npm run build -w @ff/server && node scripts/ensure-build-dirs.js",
     "start": "npm run start -w @ff/server",
     "clean": "rm -rf dist client/dist server/dist",
     "lint": "tsc --noEmit",

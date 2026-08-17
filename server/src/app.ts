@@ -12,8 +12,13 @@ export function createExpressApp() {
   app.use(express.json({ limit: '10mb' }));
 
   app.use('/api/health', healthRoutes);
+  app.use('/health', healthRoutes);
+
   app.use('/api/ai', aiRoutes);
+  app.use('/ai', aiRoutes);
+
   app.use('/api/pluggy', pluggyRoutes);
+  app.use('/pluggy', pluggyRoutes);
 
   app.use(errorHandler);
 
