@@ -12,6 +12,10 @@ export default defineConfig(() => {
         '@ff/shared': path.resolve(__dirname, '../shared/src/index.ts'),
       },
     },
+    build: {
+      outDir: path.resolve(__dirname, '../dist'),
+      emptyOutDir: true,
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       hmr: process.env.DISABLE_HMR !== 'true',
