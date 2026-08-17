@@ -250,3 +250,22 @@ CREATE TRIGGER update_subscriptions_timestamp BEFORE UPDATE ON subscriptions FOR
 CREATE TRIGGER update_debts_timestamp BEFORE UPDATE ON debts FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 CREATE TRIGGER update_investments_timestamp BEFORE UPDATE ON investments FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 CREATE TRIGGER update_automation_rules_timestamp BEFORE UPDATE ON automation_rules FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- ==========================================
+-- 5. PERMISSÕES E ROW LEVEL SECURITY (RLS)
+-- ==========================================
+ALTER TABLE family_members DISABLE ROW LEVEL SECURITY;
+ALTER TABLE categories DISABLE ROW LEVEL SECURITY;
+ALTER TABLE accounts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE budgets DISABLE ROW LEVEL SECURITY;
+ALTER TABLE goals DISABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE debts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE investments DISABLE ROW LEVEL SECURITY;
+ALTER TABLE automation_rules DISABLE ROW LEVEL SECURITY;
+ALTER TABLE tags DISABLE ROW LEVEL SECURITY;
+ALTER TABLE transaction_tags DISABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs DISABLE ROW LEVEL SECURITY;
+
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;

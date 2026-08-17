@@ -741,6 +741,8 @@ describe('BankIntegration', () => {
         onImportInvestments={onImportInvestments}
       />
     );
+    // Desmarca filtro para verificar o card com tag 'Importado'
+    fireEvent.click(screen.getByLabelText(/Ocultar já importados/i));
     expect(screen.getByText('Importado')).toBeInTheDocument();
   });
 
@@ -805,7 +807,7 @@ describe('BankIntegration', () => {
     expect(imported.every((i: any) => i.accountId === 'inv_acc')).toBe(true);
   });
 
-  it('não reimporta ativo já presente no app', async () => {
+  it('não reimporta ativo já presente no app e oculta por padrão com filtro ativo', async () => {
     mockFetch();
     investmentDb = [
       { id: 'pluggy_inv_1', name: 'Tesouro Selic 2029', type: 'FIXED_INCOME', subtype: 'TREASURY', amount: 12450.8 },
@@ -828,8 +830,16 @@ describe('BankIntegration', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Importado')).toBeInTheDocument();
+      expect(screen.getByText(/Todos os ativos disponíveis já foram importados/i)).toBeInTheDocument();
     });
+
+    // Desmarca o filtro "Ocultar já importados" para inspecionar o card
+    const filterCheckbox = screen.getByLabelText(/Ocultar já importados/i);
+    expect(filterCheckbox).toBeChecked();
+    fireEvent.click(filterCheckbox);
+    expect(filterCheckbox).not.toBeChecked();
+
+    expect(screen.getByText('Importado')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Importado/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Selecionar todos \(0\)/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Importar selecionados \(0\)/ })).toBeDisabled();
@@ -850,7 +860,39 @@ describe('BankIntegration', () => {
         onImportInvestments={onImportInvestments}
       />
     );
-    expect(screen.getByText('Importado')).toBeInTheDocument();
+  });
+
+  it('permite criar conta de investimento rapidamente direto pela tela', async () => {
+    mockFetch();
+    investmentDb = [
+      { id: 'pluggy_inv_1', name: 'Tesouro Selic 2029', type: 'FIXED_INCOME', subtype: 'TREASURY', amount: 12450.8 },
+    ];
+    const onAddAccount = vi.fn();
+    render(
+      <BankIntegration
+        {...baseProps}
+        accounts={[makeAccount()]}
+        onAddAccount={onAddAccount}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Tesouro Selic 2029')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Nova Conta/i }));
+    expect(screen.getByText('Nova Conta de Investimento')).toBeInTheDocument();
+
+    const nameInput = screen.getByPlaceholderText(/Ex: XP Investimentos/i);
+    fireEvent.change(nameInput, { target: { value: 'BTG Pactual' } });
+    fireEvent.click(screen.getByRole('button', { name: /Criar e Vincular/i }));
+
+    await waitFor(() => {
+      expect(onAddAccount).toHaveBeenCalledTimes(1);
+    });
+    const createdAcc = onAddAccount.mock.calls[0][0];
+    expect(createdAcc.name).toBe('BTG Pactual');
+    expect(createdAcc.type).toBe('investment');
   });
 
   it('avisa quando não há conta de investimento para vincular', async () => {

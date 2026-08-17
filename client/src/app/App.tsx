@@ -37,6 +37,8 @@ import {
   syncSubscription, 
   syncDebt, 
   syncInvestment, 
+  syncInvestmentWithResult,
+  SyncResult,
   syncAutomationRule, 
   syncFamilyMember,
   syncTag,
@@ -1979,16 +1981,31 @@ export default function App() {
 
   // Importa ativos vindos da Pluggy (carteira) e os persiste no app, já
   // vinculados à conta de investimento selecionada e marcados como conciliados.
-  const handleImportInvestments = async (newInvestments: Omit<Investment, 'id'>[]) => {
+  const handleImportInvestments = async (newInvestments: Omit<Investment, 'id'>[]): Promise<SyncResult> => {
     const withIds: Investment[] = newInvestments.map(inv => ({
       ...inv,
       id: `inv_pluggy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     }));
+
+    // Sincroniza primeiramente com o banco de dados (Supabase)
+    const results = await Promise.all(withIds.map(inv => syncInvestmentWithResult(inv)));
+    const firstFailure = results.find(res => !res.success);
+
+    if (firstFailure) {
+      // Se falhou no banco, não grava localmente para evitar divergência
+      return {
+        success: false,
+        error: firstFailure.error || 'Falha ao salvar no banco de dados Supabase.',
+      };
+    }
+
+    // Persistência no banco confirmada: atualiza estado em memória
     setState(prev => ({
       ...prev,
       investments: [...(prev.investments || []), ...withIds]
     }));
-    await Promise.all(withIds.map(inv => syncInvestment(inv)));
+
+    return { success: true };
   };
 
   // ==========================================
@@ -2514,6 +2531,7 @@ export default function App() {
               investments={state.investments || []}
               onImportTransactions={handleImportTransactions}
               onImportInvestments={handleImportInvestments}
+              onAddAccount={handleAddAccount}
               onEditTransaction={(tx) => handleEditTransaction(tx.id, {
                 isReconciled: tx.isReconciled,
                 pluggyTransactionId: tx.pluggyTransactionId,

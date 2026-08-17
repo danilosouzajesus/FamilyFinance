@@ -745,42 +745,65 @@ export async function syncDebt(debt: Debt, isDelete = false): Promise<boolean> {
   }
 }
 
-export async function syncInvestment(inv: Investment, isDelete = false): Promise<boolean> {
+export interface SyncResult {
+  success: boolean;
+  error?: string;
+}
+
+export async function syncInvestmentWithResult(inv: Investment, isDelete = false): Promise<SyncResult> {
   const supabase = getSupabaseClient();
-  if (!supabase) return false;
+  if (!supabase) {
+    return {
+      success: false,
+      error: 'Supabase não conectado. Verifique se as credenciais (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY) estão configuradas nas configurações do banco.',
+    };
+  }
 
   try {
     if (isDelete) {
       const { error } = await supabase.from('investments').delete().eq('id', inv.id);
-      return !error;
+      if (error) {
+        return { success: false, error: `Erro no Supabase: ${error.message}` };
+      }
+      return { success: true };
     } else {
+      // Sanitização defensiva para compatibilidade com qualquer variação de tipos no schema SQL
+      const startDateStr = inv.startDate
+        ? (typeof inv.startDate === 'string' && inv.startDate.length >= 10 ? inv.startDate.slice(0, 10) : new Date(inv.startDate).toISOString().slice(0, 10))
+        : new Date().toISOString().slice(0, 10);
+
       const dbPayload = {
-        id: inv.id,
-        type: inv.type,
-        name: inv.name,
-        initial_amount: inv.initialAmount,
-        current_amount: inv.currentAmount,
-        start_date: inv.startDate,
-        simple_yield: inv.simpleYield,
-        contributions_count: inv.contributionsCount,
-        withdrawals_count: inv.withdrawalsCount || 0,
-        account_id: inv.accountId || null,
-        origin: inv.origin || null,
-        pluggy_investment_id: inv.pluggyInvestmentId || null,
-        pluggy_item_id: inv.pluggyItemId || null,
-        is_reconciled: inv.isReconciled || false,
+        id: String(inv.id),
+        type: String(inv.type || 'OTHER'),
+        name: String(inv.name || 'Investimento'),
+        initial_amount: Number.isFinite(Number(inv.initialAmount)) ? Number(inv.initialAmount) : 0,
+        current_amount: Number.isFinite(Number(inv.currentAmount)) ? Number(inv.currentAmount) : 0,
+        start_date: startDateStr,
+        simple_yield: Number.isFinite(Number(inv.simpleYield)) ? Number(inv.simpleYield) : 0,
+        contributions_count: Number.isInteger(Number(inv.contributionsCount)) ? Number(inv.contributionsCount) : 1,
+        withdrawals_count: Number.isInteger(Number(inv.withdrawalsCount)) ? Number(inv.withdrawalsCount) : 0,
+        account_id: inv.accountId ? String(inv.accountId) : null,
+        origin: inv.origin ? String(inv.origin) : 'PLUGGY',
+        pluggy_investment_id: inv.pluggyInvestmentId ? String(inv.pluggyInvestmentId) : null,
+        pluggy_item_id: inv.pluggyItemId ? String(inv.pluggyItemId) : null,
+        is_reconciled: Boolean(inv.isReconciled),
       };
       const { error } = await supabase.from('investments').upsert(dbPayload);
       if (error) {
         console.error('[Supabase Error] failed to upsert investment:', error.message || error);
-        return false;
+        return { success: false, error: `Erro no Supabase: ${error.message} (${error.code || 'sem código'})` };
       }
-      return true;
+      return { success: true };
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('Failed to sync investment to Supabase:', err);
-    return false;
+    return { success: false, error: `Exceção de rede ao conectar com o Supabase: ${err?.message || err}` };
   }
+}
+
+export async function syncInvestment(inv: Investment, isDelete = false): Promise<boolean> {
+  const res = await syncInvestmentWithResult(inv, isDelete);
+  return res.success;
 }
 
 export async function syncAutomationRule(rule: AutomationRule, isDelete = false): Promise<boolean> {

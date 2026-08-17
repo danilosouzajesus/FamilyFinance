@@ -16,7 +16,11 @@ import {
   Search,
   FlaskConical,
   PenLine,
-  TrendingUp
+  TrendingUp,
+  Plus,
+  Filter,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { Category, Account, Transaction, AutomationRule, Subcategory, Tag, PluggyPendingTx, PluggyConnection, PluggyPendingStatus, PluggyAccountInfo, Investment, CreditCard } from '@ff/shared';
 import { applyRulesToTx, RuleContext } from '@ff/shared';
@@ -33,7 +37,8 @@ interface BankIntegrationProps {
   automationRules?: AutomationRule[];
   investments?: Investment[];
   onImportTransactions: (importedTxs: Transaction[]) => void;
-  onImportInvestments?: (investments: Omit<Investment, 'id'>[]) => void;
+  onImportInvestments?: (investments: Omit<Investment, 'id'>[]) => Promise<{ success: boolean; error?: string } | boolean> | void;
+  onAddAccount?: (account: Account) => Promise<void> | void;
   onEditTransaction?: (tx: Transaction) => void;
   userId?: string;
 }
@@ -192,6 +197,7 @@ export default function BankIntegration({
   investments = [],
   onImportTransactions,
   onImportInvestments,
+  onAddAccount,
   onEditTransaction,
   userId
 }: BankIntegrationProps) {
@@ -234,6 +240,11 @@ export default function BankIntegration({
   const [importingInvestments, setImportingInvestments] = useState(false);
   const [selectedInvIds, setSelectedInvIds] = useState<string[]>([]);
   const [batchInvAccountId, setBatchInvAccountId] = useState('');
+  const [hideImported, setHideImported] = useState(true);
+  const [newAccModalOpen, setNewAccModalOpen] = useState(false);
+  const [newAccName, setNewAccName] = useState('');
+  const [newAccColor, setNewAccColor] = useState('#6366F1');
+  const [creatingAccount, setCreatingAccount] = useState(false);
 
   // Investimentos já importados para o app (identificados pelo pluggyInvestmentId),
   // derivados da lista real em vez de um estado local que se perde ao remontar.
@@ -479,49 +490,118 @@ export default function BankIntegration({
     setSyncDatePromptOpen(true);
   };
 
+  // Cria uma nova conta de investimento de forma rápida diretamente pela tela
+  const handleQuickCreateAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAccName.trim() || creatingAccount) return;
+    setCreatingAccount(true);
+    try {
+      const newAcc: Account = {
+        id: `acc_inv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: newAccName.trim(),
+        type: 'investment',
+        balance: 0,
+        color: newAccColor || '#6366F1'
+      };
+      if (onAddAccount) {
+        await onAddAccount(newAcc);
+      }
+      setBatchInvAccountId(newAcc.id);
+      setInvImportAccountId(prev => {
+        const next = { ...prev };
+        // Preenche para todos os selecionados ou sem conta definida
+        selectedInvIds.forEach(id => { next[id] = newAcc.id; });
+        return next;
+      });
+      setNewAccName('');
+      setNewAccModalOpen(false);
+      setPluggyNotice(`Conta de investimento "${newAcc.name}" criada com sucesso!`);
+    } catch (err: any) {
+      setPluggyNotice(`Erro ao criar conta: ${err.message || err}`);
+    } finally {
+      setCreatingAccount(false);
+    }
+  };
+
   // Importa um ativo detectado na Pluggy para o app (tela Investimentos & Dívidas),
   // vinculando-o à conta de investimento escolhida e marcando a origem como Pluggy.
-  const handleImportInvestment = (raw: RawPluggyInvestment) => {
+  const handleImportInvestment = async (raw: RawPluggyInvestment) => {
     const targetId = invImportAccountId[raw.id] || '';
     if (!targetId || importedInvestmentIds.has(raw.id)) return;
     if (!onImportInvestments) return;
 
-    onImportInvestments([
-      {
-        ...rawInvestmentToInvestmentFields(raw),
-        accountId: targetId,
-        origin: 'PLUGGY',
-        pluggyInvestmentId: raw.id,
-        pluggyItemId: raw.itemId,
-        isReconciled: true,
-        contributionsCount: 1,
-      },
-    ]);
-    setPluggyNotice(`Ativo "${raw.name}" importado para o app e vinculado à conta de investimento.`);
+    setImportingInvestments(true);
+    setPluggyNotice(null);
+    try {
+      const res = await onImportInvestments([
+        {
+          ...rawInvestmentToInvestmentFields(raw),
+          accountId: targetId,
+          origin: 'PLUGGY',
+          pluggyInvestmentId: raw.id,
+          pluggyItemId: raw.itemId,
+          isReconciled: true,
+          contributionsCount: 1,
+        },
+      ]);
+      const isSuccess = typeof res === 'object' && res !== null ? res.success : res !== false;
+      const errMsg = typeof res === 'object' && res !== null && res.error ? res.error : 'Falha de comunicação com o Supabase.';
+
+      if (!isSuccess) {
+        setPluggyNotice(`Falha ao salvar no banco de dados: ${errMsg}`);
+      } else {
+        setPluggyNotice(`Ativo "${raw.name}" importado e salvo com sucesso no banco de dados.`);
+      }
+    } catch (err: any) {
+      setPluggyNotice(`Erro ao importar ativo no banco de dados: ${err.message || err}`);
+    } finally {
+      setImportingInvestments(false);
+    }
   };
 
-  // Importa vários ativos selecionados de uma vez para a mesma conta de investimento.
-  const handleImportInvestmentsBatch = () => {
+  // Importa vários ativos selecionados de uma vez para as contas de investimento associadas.
+  const handleImportInvestmentsBatch = async () => {
     if (!onImportInvestments) return;
     const selected = pluggyInvestments.filter(
       inv => selectedInvIds.includes(inv.id) && !importedInvestmentIds.has(inv.id)
     );
     if (selected.length === 0) return;
 
-    onImportInvestments(
-      selected.map(raw => ({
-        ...rawInvestmentToInvestmentFields(raw),
-        accountId: invImportAccountId[raw.id] || '',
-        origin: 'PLUGGY',
-        pluggyInvestmentId: raw.id,
-        pluggyItemId: raw.itemId,
-        isReconciled: true,
-        contributionsCount: 1,
-      }))
-    );
-    setPluggyNotice(`${selected.length} ativo(s) importado(s) para o app e vinculados às contas de investimento.`);
-    setSelectedInvIds([]);
-    setBatchInvAccountId('');
+    const withoutAccount = selected.filter(raw => !invImportAccountId[raw.id]);
+    if (withoutAccount.length > 0) {
+      setPluggyNotice(`Por favor, selecione uma conta de investimento para todos os ativos antes de importar (faltam ${withoutAccount.length}).`);
+      return;
+    }
+
+    setImportingInvestments(true);
+    setPluggyNotice(null);
+    try {
+      const res = await onImportInvestments(
+        selected.map(raw => ({
+          ...rawInvestmentToInvestmentFields(raw),
+          accountId: invImportAccountId[raw.id] || '',
+          origin: 'PLUGGY',
+          pluggyInvestmentId: raw.id,
+          pluggyItemId: raw.itemId,
+          isReconciled: true,
+          contributionsCount: 1,
+        }))
+      );
+      const isSuccess = typeof res === 'object' && res !== null ? res.success : res !== false;
+      const errMsg = typeof res === 'object' && res !== null && res.error ? res.error : 'Falha de comunicação com o Supabase.';
+
+      if (!isSuccess) {
+        setPluggyNotice(`Falha ao sincronizar com o banco: ${errMsg}`);
+      } else {
+        setPluggyNotice(`${selected.length} ativo(s) importado(s) e persistidos com sucesso no banco de dados!`);
+        setSelectedInvIds([]);
+        setBatchInvAccountId('');
+      }
+    } catch (err: any) {
+      setPluggyNotice(`Erro na importação em lote: ${err.message || err}`);
+    } finally {
+      setImportingInvestments(false);
+    }
   };
 
   // Aplica a conta de investimento escolhida a todos os ativos selecionados (operação em lote).
@@ -1255,42 +1335,141 @@ export default function BankIntegration({
             Ativos detectados na corretora/banco conectado (apenas com saldo acima de zero). Associe cada ativo a uma <b>conta de investimento</b> do app (ou crie uma nova) e importe para a tela "Investimentos &amp; Dívidas". Os valores ficam marcados como vindos da Pluggy. Ativos já importados ficam marcados e não podem ser importados novamente.
           </p>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setSelectedInvIds(prev =>
-                prev.length === availableInvCount ? [] : availableInvIds
+          <div className="flex items-center gap-2 flex-wrap justify-between">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setSelectedInvIds(prev =>
+                  prev.length === availableInvCount ? [] : availableInvIds
+                )}
+                className="px-2.5 py-1 rounded-lg border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                {selectedInvIds.length === availableInvCount && availableInvCount > 0 ? 'Desmarcar todos' : `Selecionar todos (${availableInvCount})`}
+              </button>
+              <button
+                type="button"
+                disabled={selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length === 0 || importingInvestments}
+                onClick={handleImportInvestmentsBatch}
+                className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+              >
+                {importingInvestments ? <RefreshCw size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+                Importar selecionados ({selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length})
+              </button>
+              <select
+                value={batchInvAccountId}
+                onChange={(e) => handleApplyBatchAccount(e.target.value)}
+                disabled={selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length === 0}
+                className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-label="Aplicar conta a todos os selecionados"
+              >
+                <option value="">Aplicar conta a todos os selecionados...</option>
+                {accounts.filter(a => a.type === 'investment').map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+
+              {onAddAccount && (
+                <button
+                  type="button"
+                  onClick={() => setNewAccModalOpen(true)}
+                  className="px-2.5 py-1 rounded-lg border border-dashed border-indigo-300 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-50 text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                  title="Criar nova conta de investimento"
+                >
+                  <Plus size={11} />
+                  Nova Conta
+                </button>
               )}
-              className="px-2.5 py-1 rounded-lg border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-            >
-              {selectedInvIds.length === availableInvCount && availableInvCount > 0 ? 'Desmarcar todos' : `Selecionar todos (${availableInvCount})`}
-            </button>
-            <button
-              type="button"
-              disabled={selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length === 0 || importingInvestments}
-              onClick={handleImportInvestmentsBatch}
-              className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-            >
-              <CheckCircle2 size={11} />
-              Importar selecionados ({selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length})
-            </button>
-            <select
-              value={batchInvAccountId}
-              onChange={(e) => handleApplyBatchAccount(e.target.value)}
-              disabled={selectedInvIds.filter(id => !importedInvestmentIds.has(id)).length === 0}
-              className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-              aria-label="Aplicar conta a todos os selecionados"
-            >
-              <option value="">Aplicar conta a todos os selecionados...</option>
-              {accounts.filter(a => a.type === 'investment').map(a => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
+            </div>
+
+            {/* Filtro: Ocultar já importados */}
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-700 cursor-pointer select-none hover:bg-slate-100 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={hideImported}
+                  onChange={(e) => setHideImported(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <Filter size={12} className="text-slate-400" />
+                <span>Ocultar já importados</span>
+              </label>
+            </div>
           </div>
+
+          {/* Quick Create Investment Account Modal */}
+          {newAccModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
+              <div className="bg-white rounded-2xl p-5 max-w-sm w-full border border-slate-200 shadow-xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Building2 size={16} className="text-indigo-600" />
+                    <h4 className="text-xs font-bold text-slate-900">Nova Conta de Investimento</h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setNewAccModalOpen(false)}
+                    className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleQuickCreateAccount} className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Nome da Conta / Corretora
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: XP Investimentos, NuInvest, BTG..."
+                      value={newAccName}
+                      onChange={(e) => setNewAccName(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Cor da Conta
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={newAccColor}
+                        onChange={(e) => setNewAccColor(e.target.value)}
+                        className="h-8 w-12 rounded border border-slate-200 cursor-pointer"
+                      />
+                      <span className="text-xs font-medium text-slate-600">{newAccColor}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setNewAccModalOpen(false)}
+                      className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!newAccName.trim() || creatingAccount}
+                      className="px-4 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {creatingAccount ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
+                      Criar e Vincular
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {pluggyInvestments
               .filter(inv => (inv.amount ?? 0) > 0)
+              .filter(inv => !hideImported || !importedInvestmentIds.has(inv.id))
               .map(inv => {
               const already = importedInvestmentIds.has(inv.id);
               const targetId = invImportAccountId[inv.id] || '';
@@ -1356,6 +1535,16 @@ export default function BankIntegration({
               );
             })}
           </div>
+
+          {hideImported && pluggyInvestments.filter(inv => (inv.amount ?? 0) > 0 && !importedInvestmentIds.has(inv.id)).length === 0 && pluggyInvestments.some(inv => importedInvestmentIds.has(inv.id)) && (
+            <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl text-center">
+              <CheckCircle2 size={20} className="text-emerald-600 mx-auto mb-1" />
+              <p className="text-xs font-bold text-emerald-800">Todos os ativos disponíveis já foram importados para o app!</p>
+              <p className="text-[11px] text-emerald-600 mt-0.5">
+                Desmarque o filtro "Ocultar já importados" acima se desejar visualizar os ativos já importados.
+              </p>
+            </div>
+          )}
 
           {accounts.filter(a => a.type === 'investment').length === 0 && (
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-800 font-semibold flex items-start gap-2">
