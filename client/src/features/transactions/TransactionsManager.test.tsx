@@ -325,4 +325,82 @@ describe('TransactionsManager', () => {
     expect(screen.getByText('Carrefour')).toBeInTheDocument();
     expect(screen.getByText('iFood')).toBeInTheDocument();
   });
+
+  it('permite alternar ordenação por data entre crescente e decrescente', () => {
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 't1', notes: 'Mais Antiga', date: '2026-08-01' }),
+          makeTx({ id: 't2', notes: 'Intermediária', date: '2026-08-15' }),
+          makeTx({ id: 't3', notes: 'Mais Recente', date: '2026-08-30' }),
+        ]}
+        categories={[makeCategory()]}
+      />
+    );
+
+    // Por padrão, a ordenação é crescente (asc)
+    const tableBody = document.querySelector('#txs-table tbody');
+    expect(tableBody).toBeTruthy();
+    let rows = tableBody!.querySelectorAll('tr');
+    expect(rows[0].textContent).toContain('Mais Antiga');
+    expect(rows[1].textContent).toContain('Intermediária');
+    expect(rows[2].textContent).toContain('Mais Recente');
+
+    // Clica no cabeçalho "Data" para alternar para decrescente (desc)
+    const sortDateBtn = document.getElementById('sort-date-col-btn');
+    expect(sortDateBtn).toBeTruthy();
+    fireEvent.click(sortDateBtn!);
+
+    rows = tableBody!.querySelectorAll('tr');
+    expect(rows[0].textContent).toContain('Mais Recente');
+    expect(rows[1].textContent).toContain('Intermediária');
+    expect(rows[2].textContent).toContain('Mais Antiga');
+
+    // Clica novamente para voltar a crescente (asc)
+    fireEvent.click(sortDateBtn!);
+    rows = tableBody!.querySelectorAll('tr');
+    expect(rows[0].textContent).toContain('Mais Antiga');
+    expect(rows[1].textContent).toContain('Intermediária');
+    expect(rows[2].textContent).toContain('Mais Recente');
+  });
+
+  it('exibe o saldo inicial fechado antes do período selecionado e atualiza com filtro de conta', () => {
+    const acc1 = makeAccount({ id: 'acc-1', name: 'Nubank Corrente', balance: 0 });
+    const acc2 = makeAccount({ id: 'acc-2', name: 'Itaú', balance: 0 });
+
+    // Transações em julho (fechamento de julho)
+    const txJul1 = makeTx({ id: 'j1', accountId: 'acc-1', type: 'income', amount: 5000, date: '2026-07-10' });
+    const txJul2 = makeTx({ id: 'j2', accountId: 'acc-1', type: 'expense', amount: 2000, date: '2026-07-20' }); // Saldo acc-1 em julho = 3000
+    const txJul3 = makeTx({ id: 'j3', accountId: 'acc-2', type: 'income', amount: 4000, date: '2026-07-15' }); // Saldo acc-2 em julho = 4000
+    
+    // Transações em agosto
+    const txAug1 = makeTx({ id: 'a1', accountId: 'acc-1', type: 'expense', amount: 500, date: '2026-08-05' });
+
+    render(
+      <TransactionsManager
+        {...baseProps}
+        accounts={[acc1, acc2]}
+        transactions={[txJul1, txJul2, txJul3, txAug1]}
+        categories={[makeCategory()]}
+      />
+    );
+
+    // Seleciona o mês de Agosto / período com data inicial 2026-08-01
+    const startDateInput = document.getElementById('filter-start-date') as HTMLInputElement;
+    expect(startDateInput).toBeTruthy();
+    fireEvent.change(startDateInput, { target: { value: '2026-08-01' } });
+
+    // Saldo inicial consolidado antes de 01/08/2026 deve ser 3.000 + 4.000 = 7.000 (fechamento de 31/07/2026)
+    const balanceCard = document.getElementById('opening-balance-card');
+    expect(balanceCard).toBeInTheDocument();
+    expect(balanceCard?.textContent).toContain('R$ 7.000,00');
+    expect(balanceCard?.textContent).toContain('31/07/2026');
+
+    // Ao filtrar ciclo dia 15 (ex: início 2026-08-15)
+    fireEvent.change(startDateInput, { target: { value: '2026-08-15' } });
+    // Saldo antes de 15/08: (3000 - 500 de 05/08) + 4000 = 6500 (fechamento de 14/08/2026)
+    expect(balanceCard?.textContent).toContain('R$ 6.500,00');
+    expect(balanceCard?.textContent).toContain('14/08/2026');
+  });
 });

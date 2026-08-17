@@ -16,7 +16,10 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  ArrowUp,
+  ArrowDown,
+  Wallet
 } from 'lucide-react';
 import { Transaction, Category, Account, FamilyMember, RecurrenceType, TransactionType, Tag as TagType, CreditCard as CreditCardType, Invoice, PeriodPreference } from '@ff/shared';
 import PeriodSelector from '@/components/PeriodSelector';
@@ -69,6 +72,7 @@ export default function TransactionsManager({
   const [filterMember, setFilterMember] = useState<string>('all');
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // UI States
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -401,14 +405,17 @@ export default function TransactionsManager({
     ...filteredPlain.map(tx => ({ kind: 'tx' as const, tx, date: tx.date })),
     ...filteredInvoiceRows.map(row => ({ kind: 'invoice' as const, row, date: row.dueDate })),
   ];
-  tableRows.sort((a, b) => a.date.localeCompare(b.date));
+  tableRows.sort((a, b) => {
+    const cmp = a.date.localeCompare(b.date);
+    return sortOrder === 'asc' ? cmp : -cmp;
+  });
 
   /**
    * Saldo do cartão/conta: compras no cartão (includeInBalanceSum=false) e
    * transações de pagamento de fatura NÃO debitam individualmente. A fatura
    * contabiliza todas elas e apenas o valor da fatura é retirado do saldo.
    */
-  const computeAccountBalanceAt = (accountId: string, anchor: { txId?: string; invoiceId?: string }): number => {
+  const computeAccountBalanceAt = (accountId: string, anchor?: { txId?: string; invoiceId?: string; beforeDate?: string }): number => {
     const events: { date: string; signed: number; ref?: string }[] = [];
     for (const tx of transactions) {
       if (tx.accountId !== accountId || tx.deleted_at) continue;
@@ -423,14 +430,55 @@ export default function TransactionsManager({
       events.push({ date: inv.dueDate, signed: -inv.totalAmount, ref: `inv:${inv.id}` });
     }
     events.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Se solicitado o saldo antes de uma data (fechamento do dia/período anterior)
+    if (anchor?.beforeDate) {
+      let balanceBefore = 0;
+      for (const ev of events) {
+        if (ev.date < anchor.beforeDate) {
+          balanceBefore += ev.signed;
+        }
+      }
+      return balanceBefore;
+    }
+
     let balance = 0;
     for (const ev of events) {
       balance += ev.signed;
-      if (anchor.invoiceId && ev.ref === `inv:${anchor.invoiceId}`) return balance;
-      if (anchor.txId && ev.ref === anchor.txId) return balance;
+      if (anchor?.invoiceId && ev.ref === `inv:${anchor.invoiceId}`) return balance;
+      if (anchor?.txId && ev.ref === anchor.txId) return balance;
     }
     return balance;
   };
+
+  // Contas consideradas no cálculo de saldo (todas ou filtradas)
+  const targetAccounts = filterAccount.length > 0
+    ? accounts.filter(a => filterAccount.includes(a.id))
+    : accounts;
+
+  // Data inicial do período/filtro para calcular o saldo de abertura (fechamento do dia anterior)
+  const effectiveStartDate = filterStartDate || periodRange?.start || '';
+
+  // Formata o dia anterior para exibição clara (ex: "até 31/07/2026" ou "até 14/08/2026")
+  const previousDayFormatted = (() => {
+    if (!effectiveStartDate) return null;
+    const [y, m, d] = effectiveStartDate.split('-').map(Number);
+    const prevDate = new Date(y, m - 1, d - 1);
+    return prevDate.toLocaleDateString('pt-BR');
+  })();
+
+  // Cálculo dos saldos por conta e total no fechamento anterior
+  const accountOpeningBalances = targetAccounts.map(acc => {
+    const openingBal = effectiveStartDate 
+      ? computeAccountBalanceAt(acc.id, { beforeDate: effectiveStartDate })
+      : acc.balance;
+    return {
+      account: acc,
+      balance: openingBal,
+    };
+  });
+
+  const totalOpeningBalance = accountOpeningBalances.reduce((sum, item) => sum + item.balance, 0);
 
   const renderTransactionCells = (t: Transaction, showSaldo = true) => {
     const member = familyMembers.find(m => m.id === t.memberId);
@@ -774,6 +822,64 @@ export default function TransactionsManager({
         </div>
       </div>
 
+      {/* Opening Balance Summary Card */}
+      <div className="bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm" id="opening-balance-card">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+              <Wallet size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  {targetAccounts.length === 1 
+                    ? `Saldo Inicial da Conta (${targetAccounts[0].name})` 
+                    : filterAccount.length > 0 
+                      ? `Saldo Inicial das Contas Filtradas (${targetAccounts.length})` 
+                      : 'Saldo Inicial Consolidado (Todas as Contas)'}
+                </span>
+                {previousDayFormatted && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-semibold">
+                    Fechamento de {previousDayFormatted}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span 
+                  className={`text-2xl font-display font-extrabold tracking-tight ${
+                    totalOpeningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'
+                  }`}
+                  id="total-opening-balance-value"
+                >
+                  R$ {totalOpeningBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-xs text-slate-400 font-medium">
+                  saldo antes do período selecionado
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Breakdown por conta quando há mais de 1 conta */}
+          {targetAccounts.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2 md:justify-end">
+              {accountOpeningBalances.map(({ account, balance }) => (
+                <div 
+                  key={account.id} 
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-xs"
+                >
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: account.color }} />
+                  <span className="text-slate-600 font-medium">{account.name}:</span>
+                  <span className={`font-bold ${balance >= 0 ? 'text-slate-800' : 'text-rose-600'}`}>
+                    R$ {balance.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Transactions Grid/Table */}
       <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/20">
@@ -792,7 +898,23 @@ export default function TransactionsManager({
             <table className="w-full min-w-[800px] border-collapse" id="txs-table">
               <thead>
                 <tr className="border-b border-slate-50 text-left">
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Data</th>
+                  <th 
+                    className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider select-none cursor-pointer hover:text-indigo-600 transition-colors group"
+                    onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                    id="sort-date-col-btn"
+                    title={sortOrder === 'asc' ? 'Ordenação: Data crescente (mais antigas primeiro). Clique para alternar para decrescente.' : 'Ordenação: Data decrescente (mais recentes primeiro). Clique para alternar para crescente.'}
+                  >
+                    <div className="flex items-center gap-1.5 text-slate-400 group-hover:text-indigo-600">
+                      <span>Data</span>
+                      <span className="inline-flex items-center justify-center p-0.5 rounded bg-slate-100 group-hover:bg-indigo-50 text-slate-500 group-hover:text-indigo-600 transition-colors">
+                        {sortOrder === 'asc' ? (
+                          <ArrowUp size={11} className="text-indigo-600 stroke-[2.5]" />
+                        ) : (
+                          <ArrowDown size={11} className="text-indigo-600 stroke-[2.5]" />
+                        )}
+                      </span>
+                    </div>
+                  </th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Descrição / Observações</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Membro</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Conta</th>
@@ -890,7 +1012,7 @@ export default function TransactionsManager({
                           </button>
                         </td>
                       </tr>
-                      {isOpen && row.txs.map((t) => (
+                      {isOpen && [...row.txs].sort((a, b) => sortOrder === 'asc' ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date)).map((t) => (
                         <tr key={t.id} className="bg-indigo-50/10 hover:bg-slate-50/50 transition-colors">
                           {renderTransactionCells(t, false)}
                         </tr>
