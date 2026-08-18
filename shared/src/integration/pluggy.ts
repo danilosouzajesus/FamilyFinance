@@ -60,6 +60,21 @@ export function findReconciliationMatch(
   return best?.id || null;
 }
 
+// 4.1 Detecta "não encontrado" vindo da API da Pluggy. Itens de sandbox que
+// ficam mais de 30 dias sem atualização são apagados pela Pluggy; o item_id
+// gravado em pluggy_connections passa a retornar 404 (ex.: ITEM_NOT_FOUND).
+// O pluggy-sdk rejeita com o corpo JSON da resposta (sem campo status HTTP),
+// então a detecção olha também o code/message/statusCode defensivamente.
+export function isPluggyNotFound(err: any): boolean {
+  if (!err) return false;
+  const status = err?.status ?? err?.statusCode ?? err?.response?.status;
+  if (status === 404) return true;
+  const code = String(err?.code || '');
+  if (/not[_-]?found/i.test(code)) return true;
+  const text = `${err?.message || ''} ${err?.codeDescription || ''}`.toLowerCase();
+  return text.includes('404') || text.includes('not found');
+}
+
 // 5. Dados de demonstração: simulam transações brutas recebidas da Pluggy
 export interface RawPluggyTx {
   id: string;

@@ -112,6 +112,15 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// Mensagem exibida quando a sincronização remove conexões cujo item não existe
+// mais na Pluggy (itens de sandbox são apagados após 30 dias sem atualização).
+function removedConnectionsNotice(removed?: string[]): string {
+  if (!removed || removed.length === 0) return '';
+  const names = removed.join('", "');
+  const plural = removed.length > 1;
+  return ` ${plural ? 'As conexões' : 'A conexão'} "${names}" ${plural ? 'foram' : 'foi'} removida${plural ? 's' : ''} porque o item expirou na Pluggy (itens de sandbox são apagados após 30 dias sem atualização). Reconecte o banco.`;
+}
+
 // 2.1 Identificação de tipo de transação a partir da descrição (via util compartilhado)
 // 2.1 Parser de arquivo OFX
 function parseOFX(text: string): PendingFileTx[] {
@@ -442,14 +451,14 @@ export default function BankIntegration({
       const params = new URLSearchParams({ userId: uid });
       if (waitForItem) params.set('wait', '1');
       if (syncFromDate) params.set('from', syncFromDate);
-      const res = await api<{ synced: number; skipped: number; pending: PluggyPendingTx[] }>(
+      const res = await api<{ synced: number; skipped: number; pending: PluggyPendingTx[]; removed?: string[] }>(
         `/api/pluggy/sync?${params.toString()}`,
         { method: 'POST' }
       );
       const msg = res.synced > 0
         ? `${res.synced} transações baixadas da Pluggy para a Caixa de Entrada.`
         : `Nenhuma transação nova. ${res.skipped > 0 ? `${res.skipped} já estavam na Caixa de Entrada.` : 'Conecte um banco e aguarde a sincronização.'}`;
-      setPluggyNotice(msg);
+      setPluggyNotice(msg + removedConnectionsNotice(res.removed));
       await loadPluggyState();
     } catch (e: any) {
       setPluggyNotice(e.message || 'Erro ao sincronizar com a Pluggy.');
@@ -466,14 +475,15 @@ export default function BankIntegration({
       const uid = userId || 'local';
       const params = new URLSearchParams({ userId: uid, accountId: pluggyAccountId });
       if (syncFromDate) params.set('from', syncFromDate);
-      const res = await api<{ synced: number; skipped: number; pending: PluggyPendingTx[] }>(
+      const res = await api<{ synced: number; skipped: number; pending: PluggyPendingTx[]; removed?: string[] }>(
         `/api/pluggy/sync?${params.toString()}`,
         { method: 'POST' }
       );
       setPluggyNotice(
-        res.synced > 0
+        (res.synced > 0
           ? `${res.synced} transações de "${accName}" baixadas para o Painel de Conciliação.`
-          : `Nenhuma transação nova em "${accName}".`
+          : `Nenhuma transação nova em "${accName}".`)
+        + removedConnectionsNotice(res.removed)
       );
       await loadPluggyState();
       setActiveSubTab('concil');

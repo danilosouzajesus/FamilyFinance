@@ -7,6 +7,7 @@ import {
   RawPluggyInvestment,
   normalizePluggyDate,
   inferPaymentMethod,
+  isPluggyNotFound,
   PluggyAccountInfo,
 } from '@ff/shared';
 import { getPluggyClient } from '../services/pluggyService';
@@ -93,12 +94,13 @@ export async function syncFromPluggy(req: Request, res: Response) {
       return true;
     });
     const { synced, skipped } = await ingestTxs(samples);
-    return res.json({ synced, skipped, pending: await listPendingByUser(userId) });
+    return res.json({ synced, skipped, removed: [], pending: await listPendingByUser(userId) });
   }
 
   const connections = await listConnectionsByUser(userId);
   let synced = 0;
   let skipped = 0;
+  const removed: string[] = [];
   for (const conn of connections) {
     try {
       let item = await client.fetchItem(conn.itemId);
@@ -128,10 +130,16 @@ export async function syncFromPluggy(req: Request, res: Response) {
       }
       await upsertConnection({ ...conn, status: item.status, updatedAt: new Date().toISOString() });
     } catch (e: any) {
+      if (isPluggyNotFound(e)) {
+        console.warn(`[Pluggy] Sync: item ${conn.itemId} não encontrado na Pluggy — removendo conexão "${conn.connectorName}".`);
+        removed.push(conn.connectorName || conn.itemId);
+        try { await deleteConnection(conn.itemId); } catch { /* store indisponível */ }
+        continue;
+      }
       console.error(`[Pluggy] Sync: erro na conexão ${conn.itemId}:`, e.message);
     }
   }
-  res.json({ synced, skipped, pending: await listPendingByUser(userId) });
+  res.json({ synced, skipped, removed, pending: await listPendingByUser(userId) });
 }
 
 // 5. Caixa de Entrada (pendências)
@@ -176,6 +184,11 @@ export async function listInvestments(req: Request, res: Response) {
         });
       }
     } catch (e: any) {
+      if (isPluggyNotFound(e)) {
+        console.warn(`[Pluggy] Investimentos: item ${conn.itemId} não encontrado — removendo conexão "${conn.connectorName}".`);
+        try { await deleteConnection(conn.itemId); } catch { /* store indisponível */ }
+        continue;
+      }
       console.error(`[Pluggy] Investimentos: erro na conexão ${conn.itemId}:`, e.message);
     }
   }
@@ -281,6 +294,11 @@ export async function listAccounts(req: Request, res: Response) {
         });
       }
     } catch (e: any) {
+      if (isPluggyNotFound(e)) {
+        console.warn(`[Pluggy] Contas: item ${conn.itemId} não encontrado — removendo conexão "${conn.connectorName}".`);
+        try { await deleteConnection(conn.itemId); } catch { /* store indisponível */ }
+        continue;
+      }
       console.warn('[Pluggy] Erro ao buscar contas da conexão:', e?.message);
     }
   }

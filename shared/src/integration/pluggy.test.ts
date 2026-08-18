@@ -7,6 +7,7 @@ import {
   sampleBankTransactions,
   sampleBankInvestments,
   rawInvestmentToInvestmentFields,
+  isPluggyNotFound,
 } from './pluggy';
 import {
   categorizeTransaction,
@@ -193,6 +194,31 @@ describe('buildApprovedTransaction', () => {
     expect(tx.category).toBe('Lazer & Cultura');
     expect(tx.categoryId).toBe('c9');
     expect(tx.notes).toBe('Passei no lazer');
+  });
+});
+
+describe('isPluggyNotFound', () => {
+  it('reconhece code ITEM_NOT_FOUND (corpo JSON do SDK)', () => {
+    expect(isPluggyNotFound({ code: 'ITEM_NOT_FOUND', message: 'Item not found' })).toBe(true);
+  });
+
+  it('reconhece status HTTP 404 em diferentes formas', () => {
+    expect(isPluggyNotFound({ status: 404 })).toBe(true);
+    expect(isPluggyNotFound({ statusCode: 404 })).toBe(true);
+    expect(isPluggyNotFound({ response: { status: 404 } })).toBe(true);
+  });
+
+  it('reconhece mensagem com not found / 404', () => {
+    expect(isPluggyNotFound({ message: 'Account not found' })).toBe(true);
+    expect(isPluggyNotFound({ codeDescription: 'Resource 404' })).toBe(true);
+  });
+
+  it('ignora erros de autenticação, 5xx e valores nulos', () => {
+    expect(isPluggyNotFound({ status: 401, message: 'Unauthorized' })).toBe(false);
+    expect(isPluggyNotFound({ status: 500, message: 'Internal server error' })).toBe(false);
+    expect(isPluggyNotFound({ code: 'INVALID_CREDENTIALS' })).toBe(false);
+    expect(isPluggyNotFound(null)).toBe(false);
+    expect(isPluggyNotFound(undefined)).toBe(false);
   });
 });
 
