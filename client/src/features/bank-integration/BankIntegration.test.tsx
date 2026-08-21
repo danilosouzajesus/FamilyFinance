@@ -947,4 +947,15 @@ describe('BankIntegration', () => {
     const imported = onImportInvestments.mock.calls[0][0];
     expect(imported.every((i: any) => i.accountId === 'inv_acc2')).toBe(true);
   });
+
+  it('exibe a aba de importação com suporte a extrato PDF do Banco BV', async () => {
+    mockFetch();
+    render(<BankIntegration {...baseProps} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Importar Extrato/i }));
+
+    expect(screen.getByText(/Importação de Extratos Bancários/i)).toBeInTheDocument();
+    expect(screen.getByText(/Banco BV \(PDF Nativo\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Extrato PDF Banco BV/i)).toBeInTheDocument();
+  });
 });

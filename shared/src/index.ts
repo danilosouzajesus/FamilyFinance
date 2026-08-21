@@ -17,6 +17,7 @@ export * from './integration/pluggy';
 export * from './engines/invoiceEngine';
 export * from './engines/ruleEngine';
 export * from './engines/pluggyEngine';
+export * from './parsers/bankStatementParser';
 
 // Utilitários puros
 export * from './utils/format';

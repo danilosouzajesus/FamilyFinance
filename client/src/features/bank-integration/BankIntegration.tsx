@@ -25,7 +25,8 @@ import {
 import { Category, Account, Transaction, AutomationRule, Subcategory, Tag, PluggyPendingTx, PluggyConnection, PluggyPendingStatus, PluggyAccountInfo, Investment, CreditCard } from '@ff/shared';
 import { applyRulesToTx, RuleContext } from '@ff/shared';
 import { buildApprovedTransaction, applySuggestionLive } from '@ff/shared';
-import { inferPaymentMethod, RawPluggyInvestment, rawInvestmentToInvestmentFields } from '@ff/shared';
+import { inferPaymentMethod, RawPluggyInvestment, rawInvestmentToInvestmentFields, ParsedBankStatementResult } from '@ff/shared';
+import { parsePdfBankStatement } from '../../lib/parsers/pdfStatementExtractor';
 
 interface BankIntegrationProps {
   categories: Category[];
@@ -57,10 +58,10 @@ interface PendingFileTx {
   matched?: boolean; // já existe transação com mesmo valor e data ±3 dias
 }
 
-// Linha unificada de conciliação (vinda da Pluggy ou de arquivo OFX/CSV)
+// Linha unificada de conciliação (vinda da Pluggy ou de arquivo PDF/OFX/CSV)
 interface ConciliationRow {
   id: string;
-  source: 'PLUGGY' | 'OFX' | 'CSV';
+  source: 'PLUGGY' | 'OFX' | 'CSV' | 'PDF';
   description: string;
   type: 'income' | 'expense';
   amount: number;
@@ -214,6 +215,7 @@ export default function BankIntegration({
   
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [pdfMeta, setPdfMeta] = useState<ParsedBankStatementResult | null>(null);
 
   const [pendingTxs, setPendingTxs] = useState<ConciliationRow[]>([]);
   const [reconciledCount, setReconciledCount] = useState(0);
@@ -284,16 +286,17 @@ export default function BankIntegration({
     });
   }, [transactions]);
 
-  const seedPending = (rows: PendingFileTx[]) => {
+  const seedPending = (rows: PendingFileTx[], source: 'OFX' | 'CSV' | 'PDF' = 'CSV') => {
     setPendingTxs(prev => [
       ...rows.map((tx, i) => {
-        const cat = categories.find(c => c.name === tx.suggestedCategory);
+        const cat = categories.find(c => c.name.toLowerCase() === tx.suggestedCategory.toLowerCase());
+        const sub = subcategories.find(s => s.name.toLowerCase() === tx.suggestedSubcategory?.toLowerCase() && s.categoryId === cat?.id);
         return {
           ...tx,
           id: `pend_${Date.now()}_${i}`,
-          source: (tx.id.startsWith('ofx') ? 'OFX' : 'CSV') as 'OFX' | 'CSV',
+          source,
           suggestedCategoryId: cat?.id,
-          suggestedSubcategoryId: undefined,
+          suggestedSubcategoryId: sub?.id,
           suggestedTagIds: [],
           matched: tx.matched ?? findMatch(tx),
         } as ConciliationRow;
@@ -731,10 +734,53 @@ export default function BankIntegration({
     }
   };
 
-  // 2.1 Real file reading + parser
-  const processFile = (file: File) => {
+  // 2.1 Real file reading + parser (PDF, OFX, CSV)
+  const processFile = async (file: File) => {
     setUploadedFileName(file.name);
     setParseError(null);
+    const isPDF = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+
+    if (isPDF) {
+      try {
+        const result = await parsePdfBankStatement(file);
+        if (!result || result.transactions.length === 0) {
+          setParseError('Nenhuma transação foi identificada no arquivo PDF. Verifique se é um extrato bancário suportado (ex: Banco BV, Itaú, Nubank, etc.).');
+          return;
+        }
+
+        setPdfMeta(result);
+
+        // Se for do Banco BV, tenta encontrar a conta correspondente
+        if (result.bankCode === '413' || result.bankName?.toLowerCase().includes('bv')) {
+          const matchedAcc = accounts.find(a => 
+            a.name.toLowerCase().includes('bv') || 
+            a.name.toLowerCase().includes('votorantim') ||
+            (result.accountNumber && a.name.includes(result.accountNumber))
+          );
+          if (matchedAcc) {
+            setTargetAccountId(matchedAcc.id);
+          }
+        }
+
+        const rows: PendingFileTx[] = result.transactions.map(t => ({
+          id: t.id,
+          description: t.description,
+          type: t.type,
+          amount: t.amount,
+          suggestedCategory: t.suggestedCategory,
+          suggestedSubcategory: t.suggestedSubcategory || '',
+          paymentMethod: t.paymentMethod,
+          date: t.date,
+          confidence: t.confidence,
+        }));
+
+        seedPending(rows, 'PDF');
+      } catch (err: any) {
+        setParseError(`Erro ao processar o PDF: ${err?.message || 'Arquivo corrompido ou formato ilegível'}`);
+      }
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result || '');
@@ -742,13 +788,18 @@ export default function BankIntegration({
       const isOFX = file.name.toLowerCase().endsWith('.ofx') || text.includes('<OFX>');
       if (isOFX) {
         rows = parseOFX(text);
+        if (rows.length === 0) {
+          setParseError('Nenhuma transação válida encontrada no arquivo OFX.');
+        } else {
+          seedPending(rows, 'OFX');
+        }
       } else {
         rows = parseCSV(text);
-      }
-      if (rows.length === 0) {
-        setParseError('Nenhuma transação válida encontrada no arquivo. Verifique o formato.');
-      } else {
-        seedPending(rows);
+        if (rows.length === 0) {
+          setParseError('Nenhuma transação válida encontrada no arquivo CSV.');
+        } else {
+          seedPending(rows, 'CSV');
+        }
       }
     };
     reader.onerror = () => setParseError('Não foi possível ler o arquivo.');
@@ -1123,7 +1174,7 @@ export default function BankIntegration({
               : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
           }`}
         >
-          <Upload size={14} /> Importar OFX/CSV
+          <Upload size={14} /> Importar Extrato (PDF/OFX/CSV)
         </button>
         <button
           type="button"
@@ -1668,10 +1719,28 @@ export default function BankIntegration({
 
       {activeSubTab === 'ofx' && (
         <div className="bg-white p-8 rounded-2xl border border-slate-200/60 shadow-sm flex flex-col items-center justify-center space-y-6">
-          <div className="text-center space-y-2 max-w-md">
-            <Building2 size={36} className="text-indigo-600 mx-auto" />
-            <h3 className="text-sm font-display font-bold text-slate-900">Importação Manual de Extratos (OFX/CSV)</h3>
-            <p className="text-xs text-slate-400 font-medium">Arraste ou selecione o arquivo .OFX/.CSV gerado pelo seu banco ou internet banking. Tipos identificados automaticamente: PIX, CARTÃO DE CRÉDITO, DÉBITO, TED/DOC e BOLETO.</p>
+          <div className="text-center space-y-2 max-w-lg">
+            <div className="w-12 h-12 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600 mx-auto shadow-xs">
+              <Building2 size={24} />
+            </div>
+            <h3 className="text-base font-display font-bold text-slate-900">Importação de Extratos Bancários (PDF / OFX / CSV)</h3>
+            <p className="text-xs text-slate-500 font-medium">
+              Arraste ou selecione o arquivo PDF do seu extrato bancário (com suporte nativo a <strong>Banco BV</strong>, Nubank, Itaú, Bradesco, Santander, Inter, etc.), arquivo OFX ou planilha CSV.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+              <span className="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-[10px] font-bold">
+                ✓ Banco BV (PDF Nativo)
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-[10px] font-semibold">
+                Extratos PDF Gerais
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-[10px] font-semibold">
+                OFX 2.0
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-[10px] font-semibold">
+                CSV / Excel
+              </span>
+            </div>
           </div>
 
           <div
@@ -1684,37 +1753,87 @@ export default function BankIntegration({
                 : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300'
             }`}
           >
-            <Upload size={32} className="text-slate-400" />
+            <Upload size={32} className="text-indigo-600" />
             
-            <div className="text-xs font-semibold text-slate-500 text-center">
+            <div className="text-xs font-semibold text-slate-600 text-center">
               {uploadedFileName ? (
                 <span className="text-indigo-600 font-bold block flex items-center justify-center gap-1.5">
                   <FileText size={16} /> {uploadedFileName} (Carregando...)
                 </span>
               ) : (
-                <span>Arraste seu arquivo .ofx/.csv aqui ou <label className="text-indigo-600 underline cursor-pointer">procure no computador<input type="file" accept=".ofx,.csv,.txt" onChange={handleFileSelect} className="hidden" /></label></span>
+                <span>Arraste seu extrato <strong>PDF, OFX ou CSV</strong> aqui ou <label className="text-indigo-600 underline font-bold cursor-pointer">procure no computador<input type="file" accept=".pdf,.ofx,.csv,.txt" onChange={handleFileSelect} className="hidden" /></label></span>
               )}
             </div>
             
-            <span className="text-[10px] text-slate-400">Tamanho máximo recomendado: 15MB</span>
+            <span className="text-[10px] text-slate-400">Identifica automaticamente transferências PIX, TED, Salário, Boletos e Cartão</span>
           </div>
 
           {parseError && (
-            <div className="w-full max-w-lg p-3 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-600 font-semibold flex items-center gap-2">
-              <AlertCircle size={14} /> {parseError}
+            <div className="w-full max-w-lg p-3.5 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-600 font-semibold flex items-center gap-2">
+              <AlertCircle size={16} className="shrink-0" /> {parseError}
             </div>
           )}
 
-          <div className="w-full max-w-lg space-y-1.5 text-[10px] text-slate-400">
-            <p className="font-bold uppercase tracking-wider">Formatos suportados</p>
-            <p>• OFX: tags <code className="bg-slate-100 px-1 rounded">&lt;STMTTRN&gt;</code> com <code className="bg-slate-100 px-1 rounded">TRNTYPE/TRNAMT/DTPOSTED/MEMO</code></p>
-            <p>• CSV: colunas com data, descrição e valor separadas por vírgula ou ponto e vírgula.</p>
+          <div className="w-full max-w-lg space-y-2 text-[11px] text-slate-500 bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+            <p className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">Formatos e Bancos Suportados</p>
+            <p>• <strong>Extrato PDF Banco BV</strong>: extrai datas, lançamentos de débito/crédito, transferências PIX (com código E2E), recebimento de salário, agência e conta corrente.</p>
+            <p>• <strong>Extratos PDF outros bancos</strong>: leitura automática de transações, datas e valores.</p>
+            <p>• <strong>OFX</strong>: arquivos padrão de internet banking com tags &lt;STMTTRN&gt;.</p>
+            <p>• <strong>CSV</strong>: colunas de data, histórico e valor.</p>
           </div>
         </div>
       )}
 
       {activeSubTab === 'concil' && (
         <div className="space-y-4">
+          {pdfMeta && (
+            <div className="bg-linear-to-r from-blue-50 to-indigo-50 border border-blue-200/80 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
+                  {pdfMeta.bankCode === '413' ? 'BV' : <Building2 size={20} />}
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-slate-900 text-sm">
+                      {pdfMeta.bankName || 'Extrato Bancário'} {pdfMeta.bankCode ? `(${pdfMeta.bankCode})` : ''}
+                    </span>
+                    {pdfMeta.period && (
+                      <span className="text-[10px] bg-blue-100/80 text-blue-700 px-2 py-0.5 rounded-md font-bold">
+                        Período: {pdfMeta.period}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-600 font-medium mt-0.5">
+                    {pdfMeta.holderName && <>Titular: <strong className="text-slate-800">{pdfMeta.holderName}</strong> • </>}
+                    {pdfMeta.agency && <>Agência: <strong className="text-slate-800">{pdfMeta.agency}</strong> • </>}
+                    {pdfMeta.accountNumber && <>Conta: <strong className="text-slate-800">{pdfMeta.accountNumber}</strong></>}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {!accounts.some(a => a.name.toLowerCase().includes('bv') || (pdfMeta.accountNumber && a.name.includes(pdfMeta.accountNumber))) && onAddAccount && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const newAcc: Account = {
+                        id: `acc_bv_${Date.now()}`,
+                        name: `Banco BV ${pdfMeta.accountNumber ? `(${pdfMeta.accountNumber})` : ''}`.trim(),
+                        type: 'bank',
+                        balance: pdfMeta.availableBalance ?? 0,
+                        color: 'blue-600',
+                      };
+                      await onAddAccount(newAcc);
+                      setTargetAccountId(newAcc.id);
+                    }}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                  >
+                    <Plus size={14} /> Criar Conta Banco BV no App
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-xs">
             <div className="flex items-center gap-2">
               {pendingTxs.length > 0 && (
@@ -1843,6 +1962,21 @@ export default function BankIntegration({
                           {tx.source === 'PLUGGY' && (
                             <span className="px-1.5 py-0.5 rounded bg-violet-50 border border-violet-100 text-[9px] font-bold text-violet-600 uppercase flex items-center gap-1">
                               <Plug size={8} /> Pluggy
+                            </span>
+                          )}
+                          {tx.source === 'PDF' && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-[9px] font-bold text-blue-700 uppercase flex items-center gap-1">
+                              <FileText size={8} /> PDF {pdfMeta?.bankName ? `• ${pdfMeta.bankName}` : ''}
+                            </span>
+                          )}
+                          {tx.source === 'OFX' && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[9px] font-bold text-amber-700 uppercase">
+                              OFX
+                            </span>
+                          )}
+                          {tx.source === 'CSV' && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-[9px] font-bold text-emerald-700 uppercase">
+                              CSV
                             </span>
                           )}
                           <span className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/60 text-[9px] font-bold text-slate-500 uppercase">
