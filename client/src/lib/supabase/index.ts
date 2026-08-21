@@ -181,20 +181,24 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
 
     const categoryMap = new Map<string, string>();
     if (categoriesData !== null) {
-      result.categories = categoriesData.map(c => {
+      categoriesData.forEach(c => {
         categoryMap.set(c.id, c.name);
-        return {
+      });
+
+      // Apenas categorias pai (sem parent_id) entram na lista de categorias principais
+      result.categories = categoriesData
+        .filter(c => !c.parent_id)
+        .map(c => ({
           id: c.id,
           name: c.name,
           type: c.type,
           icon: c.icon || 'Folder',
           color: c.color || '#6366F1',
-          parentId: c.parent_id || undefined,
+          parentId: undefined,
           isShared: c.is_shared ?? true,
-        };
-      });
+        }));
       
-      // Separate subcategories (those with parent_id)
+      // Subcategorias (com parent_id) separadas na lista de subcategorias
       result.subcategories = categoriesData
         .filter(c => c.parent_id)
         .map(c => ({

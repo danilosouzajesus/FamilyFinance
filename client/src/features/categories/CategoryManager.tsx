@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   FolderPlus, 
   Trash2, 
@@ -26,7 +26,8 @@ import {
   Coffee,
   Gamepad,
   Film,
-  ChevronDown
+  ChevronDown,
+  Check
 } from 'lucide-react';
 import { Category, Transaction, Subcategory, Tag as TagType, Budget } from '@ff/shared';
 
@@ -87,6 +88,15 @@ export default function CategoryManager({
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [expandedCatId, setExpandedCatId] = useState<string | null>(null);
   const [showTags, setShowTags] = useState(false);
+
+  // Subcategory inline edit/add states
+  const [editingSubId, setEditingSubId] = useState<string | null>(null);
+  const [editingSubName, setEditingSubName] = useState('');
+  const [addingSubForCatId, setAddingSubForCatId] = useState<string | null>(null);
+  const [inlineNewSubName, setInlineNewSubName] = useState('');
+
+  // Apenas categorias pai (sem parentId) são exibidas no nível principal
+  const mainCategories = useMemo(() => categories.filter(c => !c.parentId), [categories]);
   
   // Form values
   const [name, setName] = useState('');
@@ -179,7 +189,7 @@ export default function CategoryManager({
       // Need remapping
       setDeletingCat(cat);
       // Select the first valid alternative category of the same type
-      const alternatives = categories.filter(c => c.id !== cat.id && c.type === cat.type);
+      const alternatives = mainCategories.filter(c => c.id !== cat.id && c.type === cat.type);
       setRemapCatId(alternatives[0]?.id || '');
     } else {
       // No transactions linked, direct delete
@@ -191,11 +201,44 @@ export default function CategoryManager({
 
   const handleConfirmDeleteWithRemap = () => {
     if (!deletingCat || !remapCatId) return;
-    const targetCat = categories.find(c => c.id === remapCatId);
+    const targetCat = mainCategories.find(c => c.id === remapCatId);
     if (!targetCat) return;
 
     onDeleteCategory(deletingCat.id, targetCat.name);
     setDeletingCat(null);
+  };
+
+  const handleStartEditSub = (sub: Subcategory) => {
+    setEditingSubId(sub.id);
+    setEditingSubName(sub.name);
+  };
+
+  const handleSaveEditSub = (subId: string) => {
+    if (!editingSubName.trim()) return;
+    if (onEditSubcategory) {
+      onEditSubcategory(subId, { name: editingSubName.trim() });
+    }
+    setEditingSubId(null);
+    setEditingSubName('');
+  };
+
+  const handleCreateSubcategory = (catId: string) => {
+    if (!inlineNewSubName.trim()) return;
+    if (onAddSubcategory) {
+      onAddSubcategory({
+        id: `sub_${Date.now()}`,
+        name: inlineNewSubName.trim(),
+        categoryId: catId
+      });
+    }
+    setInlineNewSubName('');
+    setAddingSubForCatId(null);
+  };
+
+  const handleDeleteSub = (sub: Subcategory) => {
+    if (onDeleteSubcategory && window.confirm(`Deseja excluir a subcategoria "${sub.name}"?`)) {
+      onDeleteSubcategory(sub.id);
+    }
   };
 
   // Tags handlers
@@ -254,11 +297,11 @@ export default function CategoryManager({
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/15">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Categorias Cadastradas ({categories.length})</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Categorias Cadastradas ({mainCategories.length})</h3>
             </div>
 
             <div className="divide-y divide-slate-100">
-              {categories.map((cat) => {
+              {mainCategories.map((cat) => {
                 const IconComponent = ICON_MAP[cat.icon] || HelpCircle;
                 const linkedCount = transactions.filter(t => t.category.toLowerCase() === cat.name.toLowerCase()).length;
                 const catSubs = subcategories.filter(s => s.categoryId === cat.id);
@@ -325,31 +368,115 @@ export default function CategoryManager({
                     </div>
 
                     {isExpanded && (
-                      <div className="px-5 pb-4 pl-16 space-y-2">
-                        {catSubs.length === 0 && (
-                          <p className="text-[11px] text-slate-400 font-medium">Nenhuma subcategoria vinculada.</p>
+                      <div className="px-5 pb-4 pl-16 space-y-2 bg-slate-50/40 border-t border-slate-100/60 pt-3">
+                        <div className="flex items-center justify-between pb-1">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subcategorias vinculadas</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAddingSubForCatId(addingSubForCatId === cat.id ? null : cat.id);
+                              setInlineNewSubName('');
+                            }}
+                            className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
+                          >
+                            <Plus size={12} /> Adicionar Subcategoria
+                          </button>
+                        </div>
+
+                        {addingSubForCatId === cat.id && (
+                          <div className="flex items-center gap-2 bg-white border border-indigo-200 rounded-lg p-2 shadow-xs">
+                            <input
+                              type="text"
+                              autoFocus
+                              placeholder="Nome da subcategoria (ex: Supermercado)..."
+                              value={inlineNewSubName}
+                              onChange={(e) => setInlineNewSubName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleCreateSubcategory(cat.id);
+                                }
+                              }}
+                              className="flex-1 px-2.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:border-indigo-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleCreateSubcategory(cat.id)}
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-md cursor-pointer transition-colors"
+                            >
+                              Salvar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAddingSubForCatId(null)}
+                              className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
                         )}
+
+                        {catSubs.length === 0 && addingSubForCatId !== cat.id && (
+                          <p className="text-[11px] text-slate-400 font-medium py-1">Nenhuma subcategoria vinculada a esta categoria.</p>
+                        )}
+
                         {catSubs.map(sub => (
-                          <div key={sub.id} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
-                            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                              <Folder size={12} className="text-slate-400" /> {sub.name}
-                            </span>
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => onEditSubcategory && onEditSubcategory(sub.id, {})}
-                                className="p-1 hover:bg-white text-slate-400 hover:text-indigo-600 rounded transition-colors cursor-pointer"
-                                title="Editar Subcategoria"
-                              >
-                                <Edit3 size={12} />
-                              </button>
-                              <button
-                                onClick={() => onDeleteSubcategory && onDeleteSubcategory(sub.id)}
-                                className="p-1 hover:bg-white text-slate-400 hover:text-rose-600 rounded transition-colors cursor-pointer"
-                                title="Excluir Subcategoria"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
+                          <div key={sub.id} className="flex items-center justify-between bg-white border border-slate-200/70 rounded-lg px-3 py-2 shadow-xs">
+                            {editingSubId === sub.id ? (
+                              <div className="flex items-center gap-2 flex-1 mr-2">
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  value={editingSubName}
+                                  onChange={(e) => setEditingSubName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSaveEditSub(sub.id);
+                                    }
+                                  }}
+                                  className="flex-1 px-2 py-0.5 text-xs border border-indigo-300 rounded focus:outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveEditSub(sub.id)}
+                                  className="p-1 text-emerald-600 hover:text-emerald-700 cursor-pointer"
+                                  title="Salvar"
+                                >
+                                  <Check size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingSubId(null)}
+                                  className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                  title="Cancelar"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                                  <Folder size={12} className="text-indigo-400" /> {sub.name}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleStartEditSub(sub)}
+                                    className="p-1 hover:bg-slate-50 text-slate-400 hover:text-indigo-600 rounded transition-colors cursor-pointer"
+                                    title="Editar Subcategoria"
+                                  >
+                                    <Edit3 size={12} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteSub(sub)}
+                                    className="p-1 hover:bg-slate-50 text-slate-400 hover:text-rose-600 rounded transition-colors cursor-pointer"
+                                    title="Excluir Subcategoria"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -679,7 +806,7 @@ export default function CategoryManager({
                 onChange={(e) => setRemapCatId(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
               >
-                {categories
+                {mainCategories
                   .filter(c => c.id !== deletingCat.id && c.type === deletingCat.type)
                   .map(c => (
                     <option key={c.id} value={c.id}>{c.name} ({c.type === 'income' ? 'Receita' : 'Despesa'})</option>

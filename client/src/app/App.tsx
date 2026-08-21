@@ -1244,6 +1244,7 @@ export default function App() {
       };
     });
 
+    await syncCategory({ id } as unknown as Category, true);
     for (const tx of remappedTxs) {
       await syncTransaction(tx);
     }

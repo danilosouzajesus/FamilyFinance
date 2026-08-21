@@ -146,7 +146,8 @@ describe('fetchStateFromSupabase', () => {
     ];
 
     const result = await fetchStateFromSupabase();
-    expect(result?.categories).toHaveLength(2);
+    expect(result?.categories).toHaveLength(1);
+    expect(result?.categories?.[0].id).toBe('cat_food');
     expect(result?.categories?.[0].parentId).toBeUndefined();
     expect(result?.subcategories).toHaveLength(1);
     expect(result?.subcategories?.[0]).toMatchObject({ id: 'sub_rest', categoryId: 'cat_food' });
