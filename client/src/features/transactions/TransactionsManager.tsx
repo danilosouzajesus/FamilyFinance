@@ -1198,7 +1198,7 @@ export default function TransactionsManager({
                     onChange={(e) => {
                       setCategory(e.target.value);
                       const catObj = categories.find(c => c.name === e.target.value);
-                      setSubcategory(catObj && catObj.subcategories.length > 0 ? catObj.subcategories[0] : '');
+                      setSubcategory(catObj?.subcategories?.length ? catObj.subcategories[0] : '');
                     }}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
                     id="tx-form-category"
@@ -1219,7 +1219,7 @@ export default function TransactionsManager({
                     id="tx-form-subcategory"
                   >
                     <option value="">Nenhuma</option>
-                    {selectedCategoryObj?.subcategories.map((sub, i) => (
+                    {(selectedCategoryObj?.subcategories ?? []).map((sub, i) => (
                       <option key={i} value={sub}>{sub}</option>
                     ))}
                   </select>
