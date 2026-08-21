@@ -140,7 +140,7 @@ describe('BankIntegration', () => {
   it('mostra botão de modo demonstração quando não configurado', () => {
     mockFetch();
     render(<BankIntegration {...baseProps} accounts={[makeAccount()]} />);
-    expect(screen.getByText(/Modo demonstração/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /modo demonstração/i })).toBeInTheDocument();
   });
 
   it('gera pendências de demonstração e lista na Caixa de Entrada', async () => {
@@ -148,7 +148,7 @@ describe('BankIntegration', () => {
     pendingDb = [makePending()];
     render(<BankIntegration {...baseProps} accounts={[makeAccount()]} />);
 
-    fireEvent.click(screen.getByText(/Modo demonstração/));
+    fireEvent.click(screen.getByRole('button', { name: /modo demonstração/i }));
 
     await waitFor(() => {
       expect(requests.some(r => r.url.includes('/api/pluggy/demo/generate'))).toBe(true);
