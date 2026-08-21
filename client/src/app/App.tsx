@@ -107,24 +107,29 @@ class ErrorBoundary extends Component<{ children: ReactNode; fallback?: ReactNod
 }
 
 
-// Merge estado remoto (Supabase) sobre o estado local sem perder itens locais
-// que ainda não foram persistidos (ex.: investimento importado cujo upsert falhou).
-// Para campos de array, faz união por id — remoto vence no mesmo id, mas itens
-// exclusivamente locais são preservados.
-function mergeRemoteState(prev: FinancialState, remote: Partial<FinancialState>): FinancialState {
+// Aplica o estado remoto (Supabase) sobre o estado local. O banco de dados é a
+// fonte da verdade: cada coleção presente na resposta SUBSTITUI a local, garantindo
+// que edições/exclusões feitas na base sejam refletidas no cliente. Coleções
+// ausentes na resposta (falha transitória ou exclusivas do cliente, como
+// `notifications`) são preservadas. Se nada mudou, retorna o próprio estado
+// para evitar re-render desnecessário.
+function applyRemoteState(prev: FinancialState, remote: Partial<FinancialState>): FinancialState {
   const merged: FinancialState = { ...prev };
+  let changed = false;
   for (const key of Object.keys(remote) as (keyof FinancialState)[]) {
-    const remoteValue = remote[key];
-    const prevValue = prev[key];
-    if (Array.isArray(remoteValue) && Array.isArray(prevValue)) {
-      const remoteIds = new Set((remoteValue as any[]).map(i => i?.id).filter(Boolean));
-      const localOnly = (prevValue as any[]).filter(i => !i?.id || !remoteIds.has(i.id));
-      merged[key] = [...localOnly, ...remoteValue] as any;
-    } else {
-      merged[key] = remoteValue as any;
+    const nextValue = remote[key];
+    const currentValue = prev[key];
+    if (Array.isArray(nextValue) && Array.isArray(currentValue)) {
+      if (JSON.stringify(nextValue) !== JSON.stringify(currentValue)) {
+        merged[key] = nextValue as any;
+        changed = true;
+      }
+    } else if (nextValue !== currentValue) {
+      merged[key] = nextValue as any;
+      changed = true;
     }
   }
-  return merged;
+  return changed ? merged : prev;
 }
 
 export default function App() {
@@ -160,7 +165,7 @@ export default function App() {
 
       const remoteState = await fetchStateFromSupabase();
       if (remoteState) {
-        setState(prev => mergeRemoteState(prev, remoteState));
+        setState(prev => applyRemoteState(prev, remoteState));
       }
     } catch (err) {
       console.error('Error fetching state from Supabase:', err);
@@ -181,6 +186,24 @@ export default function App() {
     window.addEventListener('supabase_config_changed', onConfigChanged);
     return () => {
       window.removeEventListener('supabase_config_changed', onConfigChanged);
+    };
+  }, []);
+
+  // Mantém o app sempre atualizado com a base: recarrega ao focar/retornar
+  // à aba e periodicamente enquanto ela estiver visível
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        handleFetchFromSupabase();
+      }
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    const intervalId = setInterval(refresh, 60 * 1000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+      clearInterval(intervalId);
     };
   }, []);
 
