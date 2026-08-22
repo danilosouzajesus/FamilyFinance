@@ -20,7 +20,10 @@ import {
   ArrowUp,
   ArrowDown,
   Wallet,
-  ArrowLeftRight
+  ArrowLeftRight,
+  CheckSquare,
+  Layers,
+  Check
 } from 'lucide-react';
 import { Transaction, Category, Subcategory, Account, FamilyMember, RecurrenceType, TransactionType, Tag as TagType, CreditCard as CreditCardType, Invoice, PeriodPreference } from '@ff/shared';
 import PeriodSelector from '@/components/PeriodSelector';
@@ -109,6 +112,21 @@ export default function TransactionsManager({
   const [invoiceId, setInvoiceId] = useState('');
   const [installments, setInstallments] = useState('1');
   const [expandedInvoiceId, setExpandedInvoiceId] = useState<string | null>(null);
+
+  // Multi-selection states
+  const [selectedTxIds, setSelectedTxIds] = useState<string[]>([]);
+  const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+
+  // Bulk Edit Form fields
+  const [bulkCategory, setBulkCategory] = useState<string>('__keep__');
+  const [bulkSubcategory, setBulkSubcategory] = useState<string>('__keep__');
+  const [bulkAccountId, setBulkAccountId] = useState<string>('__keep__');
+  const [bulkMemberId, setBulkMemberId] = useState<string>('__keep__');
+  const [bulkApplyDate, setBulkApplyDate] = useState<boolean>(false);
+  const [bulkDate, setBulkDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [bulkStatus, setBulkStatus] = useState<string>('__keep__');
+  const [bulkTag, setBulkTag] = useState<string>('');
 
   // Period (PeriodSelector) state
   const [periodPref, setPeriodPref] = useState<PeriodPreference | null>(null);
@@ -589,6 +607,154 @@ export default function TransactionsManager({
     return sortOrder === 'asc' ? cmp : -cmp;
   });
 
+  // All visible transaction IDs for the select-all toggle
+  const allVisibleTxIds = useMemo(() => {
+    return tableRows.flatMap(row => row.kind === 'tx' ? [row.tx.id] : row.row.txs.map(t => t.id));
+  }, [tableRows]);
+
+  const isAllSelected = allVisibleTxIds.length > 0 && allVisibleTxIds.every(id => selectedTxIds.includes(id));
+  const isSomeSelected = selectedTxIds.length > 0 && !isAllSelected;
+
+  const selectedTransactions = useMemo(() => {
+    return transactions.filter(t => selectedTxIds.includes(t.id) && !t.deleted_at);
+  }, [transactions, selectedTxIds]);
+
+  const selectedIncomesTotal = selectedTransactions
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const selectedExpensesTotal = selectedTransactions
+    .filter(t => t.type === 'expense' || t.type === 'invoice_payment')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const selectedNetTotal = selectedIncomesTotal - selectedExpensesTotal;
+  const hasSelectedIncomes = selectedIncomesTotal > 0;
+  const hasSelectedExpenses = selectedExpensesTotal > 0;
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedTxIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectInvoice = (invoiceTxs: Transaction[]) => {
+    const invIds = invoiceTxs.map(t => t.id);
+    const allSelected = invIds.length > 0 && invIds.every(id => selectedTxIds.includes(id));
+    if (allSelected) {
+      setSelectedTxIds(prev => prev.filter(id => !invIds.includes(id)));
+    } else {
+      setSelectedTxIds(prev => Array.from(new Set([...prev, ...invIds])));
+    }
+  };
+
+  const handleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedTxIds(prev => prev.filter(id => !allVisibleTxIds.includes(id)));
+    } else {
+      setSelectedTxIds(prev => Array.from(new Set([...prev, ...allVisibleTxIds])));
+    }
+  };
+
+  const handleClearSelection = () => {
+    setSelectedTxIds([]);
+  };
+
+  const handleOpenBulkEdit = () => {
+    setBulkCategory('__keep__');
+    setBulkSubcategory('__keep__');
+    setBulkAccountId('__keep__');
+    setBulkMemberId('__keep__');
+    setBulkApplyDate(false);
+    setBulkDate(new Date().toISOString().split('T')[0]);
+    setBulkStatus('__keep__');
+    setBulkTag('');
+    setIsBulkEditModalOpen(true);
+  };
+
+  const handleApplyBulkEdit = async () => {
+    if (selectedTxIds.length === 0) return;
+
+    let tagIdToAdd: string | undefined;
+    if (bulkTag.trim()) {
+      const trimmedTag = bulkTag.trim();
+      const existingTagObj = allTags.find(tag => tag.name.toLowerCase() === trimmedTag.toLowerCase());
+      if (existingTagObj) {
+        tagIdToAdd = existingTagObj.id;
+      } else {
+        tagIdToAdd = `tag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        await onAddTag({ id: tagIdToAdd, name: trimmedTag, color: DEFAULT_TAG_COLOR });
+      }
+    }
+
+    for (const id of selectedTxIds) {
+      const original = transactions.find(t => t.id === id);
+      const patch: Partial<Transaction> = {};
+
+      if (bulkCategory !== '__keep__') {
+        patch.category = bulkCategory;
+        const catObj = categories.find(c => c.name === bulkCategory);
+        if (catObj) {
+          patch.categoryId = catObj.id;
+        }
+        if (bulkSubcategory !== '__keep__') {
+          patch.subcategory = bulkSubcategory;
+        }
+      }
+
+      if (bulkAccountId !== '__keep__') {
+        patch.accountId = bulkAccountId;
+      }
+
+      if (bulkMemberId !== '__keep__') {
+        patch.memberId = bulkMemberId;
+      }
+
+      if (bulkApplyDate && bulkDate) {
+        patch.date = bulkDate;
+      }
+
+      if (bulkStatus !== '__keep__') {
+        patch.status = bulkStatus as 'REALIZADO' | 'PENDENTE';
+      }
+
+      if (tagIdToAdd) {
+        const existingTags = original?.tagIds || [];
+        if (!existingTags.includes(tagIdToAdd)) {
+          patch.tagIds = [...existingTags, tagIdToAdd];
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        onEditTransaction(id, patch, 'only_this');
+      }
+    }
+
+    setSelectedTxIds([]);
+    setIsBulkEditModalOpen(false);
+  };
+
+  const handleOpenBulkDelete = () => {
+    setIsBulkDeleteModalOpen(true);
+  };
+
+  const handleConfirmBulkDelete = () => {
+    for (const id of selectedTxIds) {
+      onDeleteTransaction(id, 'only_this');
+    }
+    setSelectedTxIds([]);
+    setIsBulkDeleteModalOpen(false);
+  };
+
+  const availableSubcategoriesForBulk = useMemo(() => {
+    if (bulkCategory === '__keep__' || !bulkCategory) return [];
+    const selectedCat = categories.find(c => c.name === bulkCategory);
+    if (!selectedCat) return [];
+    const fromSub = subcategories.filter(s => s.categoryId === selectedCat.id).map(s => s.name);
+    const fromNested = categories.filter(c => c.parentId === selectedCat.id).map(c => c.name);
+    const direct = selectedCat.subcategories || [];
+    return Array.from(new Set([...fromSub, ...fromNested, ...direct]));
+  }, [bulkCategory, categories, subcategories]);
+
   /**
    * Saldo do cartão/conta: compras no cartão (includeInBalanceSum=false) e
    * transações de pagamento de fatura NÃO debitam individualmente. A fatura
@@ -663,8 +829,20 @@ export default function TransactionsManager({
     const member = familyMembers.find(m => m.id === t.memberId);
     const account = accounts.find(a => a.id === t.accountId);
     const categoryObj = categories.find(c => c.name === t.category);
+    const isSelected = selectedTxIds.includes(t.id);
     return (
       <>
+        {/* Checkbox */}
+        <td className="px-4 py-4 whitespace-nowrap text-center" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => handleToggleSelect(t.id)}
+            className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+            id={`select-tx-${t.id}`}
+            aria-label={`Selecionar transação ${t.notes || t.category}`}
+          />
+        </td>
         {/* Date */}
         <td className="px-6 py-4 text-xs font-semibold text-slate-600 whitespace-nowrap">
           {new Date(t.date).toLocaleDateString('pt-BR')}
@@ -1069,6 +1247,88 @@ export default function TransactionsManager({
         </div>
       </div>
 
+      {/* Bulk Selection Action Bar */}
+      {selectedTxIds.length > 0 && (
+        <div 
+          className="sticky top-4 z-30 bg-slate-900/95 text-white backdrop-blur-md p-4 rounded-2xl shadow-xl border border-slate-700/60 flex flex-col md:flex-row md:items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200"
+          id="tx-bulk-actions-bar"
+        >
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 bg-indigo-600/30 border border-indigo-500/40 px-3 py-1.5 rounded-xl">
+              <CheckSquare size={16} className="text-indigo-400" />
+              <span className="text-xs font-bold text-white tracking-wide" id="bulk-selected-count">
+                {selectedTxIds.length} {selectedTxIds.length === 1 ? 'transação selecionada' : 'transações selecionadas'}
+              </span>
+            </div>
+
+            {/* Totais das transações selecionadas */}
+            <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700/50 text-xs font-semibold" id="bulk-selected-totals">
+              <span className="text-slate-400 text-[11px] uppercase tracking-wider font-bold">Total:</span>
+              {hasSelectedIncomes && hasSelectedExpenses ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold">
+                    +{selectedIncomesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                  </span>
+                  <span className="text-slate-500">/</span>
+                  <span className="text-rose-400 font-bold">
+                    -{selectedExpensesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                  </span>
+                  <span className="text-slate-500">|</span>
+                  <span className="text-slate-400 text-[10px] uppercase">Líq:</span>
+                  <span className={`font-bold ${selectedNetTotal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {selectedNetTotal >= 0 ? '+' : ''}{selectedNetTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                  </span>
+                </div>
+              ) : hasSelectedIncomes ? (
+                <span className="text-emerald-400 font-bold">
+                  +{selectedIncomesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                </span>
+              ) : (
+                <span className="text-rose-400 font-bold">
+                  -{selectedExpensesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Botão Editar em Lote */}
+            <button
+              type="button"
+              onClick={handleOpenBulkEdit}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm border border-indigo-400/30"
+              id="bulk-edit-btn"
+            >
+              <Edit2 size={14} />
+              <span>Editar ({selectedTxIds.length})</span>
+            </button>
+
+            {/* Botão Excluir em Lote */}
+            <button
+              type="button"
+              onClick={handleOpenBulkDelete}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm border border-rose-400/30"
+              id="bulk-delete-btn"
+            >
+              <Trash2 size={14} />
+              <span>Excluir ({selectedTxIds.length})</span>
+            </button>
+
+            {/* Botão Limpar Seleção */}
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+              id="bulk-clear-btn"
+              title="Limpar seleção"
+            >
+              <X size={14} />
+              <span>Desmarcar</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Transactions Grid/Table */}
       <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/20">
@@ -1087,6 +1347,22 @@ export default function TransactionsManager({
             <table className="w-full min-w-[800px] border-collapse" id="txs-table">
               <thead>
                 <tr className="border-b border-slate-50 text-left">
+                  <th className="px-4 py-4 w-10 text-center">
+                    <input 
+                      type="checkbox"
+                      checked={isAllSelected}
+                      ref={el => {
+                        if (el) {
+                          el.indeterminate = isSomeSelected;
+                        }
+                      }}
+                      onChange={handleSelectAll}
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      id="select-all-txs-checkbox"
+                      aria-label="Selecionar todas as transações visíveis"
+                      title={isAllSelected ? "Desmarcar todas" : "Selecionar todas as transações visíveis"}
+                    />
+                  </th>
                   <th 
                     className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider select-none cursor-pointer hover:text-indigo-600 transition-colors group"
                     onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
@@ -1118,8 +1394,9 @@ export default function TransactionsManager({
                 {tableRows.map((entry) => {
                   if (entry.kind === 'tx') {
                     const t = entry.tx;
+                    const isSelected = selectedTxIds.includes(t.id);
                     return (
-                      <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
+                      <tr key={t.id} className={`${isSelected ? 'bg-indigo-50/50' : 'hover:bg-slate-50/50'} transition-colors`}>
                         {renderTransactionCells(t)}
                       </tr>
                     );
@@ -1133,12 +1410,31 @@ export default function TransactionsManager({
                   const acc = accounts.find(a => a.id === (row.card?.accountId || row.txs[0]?.accountId));
                   const member = familyMembers.find(m => m.id === row.txs[0]?.memberId);
                   const invoiceBalance = computeAccountBalanceAt(acc?.id || '', { invoiceId: row.invoiceId });
+                  const isInvoiceSelected = row.txs.length > 0 && row.txs.every(tx => selectedTxIds.includes(tx.id));
                   return (
                     <React.Fragment key={row.invoiceId}>
                       <tr
-                        className="bg-indigo-50/40 border-b border-slate-100 cursor-pointer hover:bg-indigo-50/60 transition-colors"
+                        className={`${isInvoiceSelected ? 'bg-indigo-100/60' : 'bg-indigo-50/40'} border-b border-slate-100 cursor-pointer hover:bg-indigo-50/60 transition-colors`}
                         onClick={() => setExpandedInvoiceId(isOpen ? null : row.invoiceId)}
                       >
+                        {/* Checkbox for invoice */}
+                        <td className="px-4 py-4 whitespace-nowrap text-center" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isInvoiceSelected}
+                            ref={el => {
+                              if (el) {
+                                const some = row.txs.some(tx => selectedTxIds.includes(tx.id));
+                                el.indeterminate = some && !isInvoiceSelected;
+                              }
+                            }}
+                            onChange={() => handleToggleSelectInvoice(row.txs)}
+                            className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            id={`select-invoice-${row.invoiceId}`}
+                            aria-label={`Selecionar todas as compras da fatura ${row.card?.name || 'Cartão'}`}
+                            title="Selecionar todas as compras desta fatura"
+                          />
+                        </td>
                         {/* Date (vencimento) */}
                         <td className="px-6 py-4 text-xs font-semibold text-slate-600 whitespace-nowrap">
                           {new Date(row.dueDate).toLocaleDateString('pt-BR')}
@@ -1201,11 +1497,14 @@ export default function TransactionsManager({
                           </button>
                         </td>
                       </tr>
-                      {isOpen && [...row.txs].sort((a, b) => sortOrder === 'asc' ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date)).map((t) => (
-                        <tr key={t.id} className="bg-indigo-50/10 hover:bg-slate-50/50 transition-colors">
-                          {renderTransactionCells(t, false)}
-                        </tr>
-                      ))}
+                      {isOpen && [...row.txs].sort((a, b) => sortOrder === 'asc' ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date)).map((t) => {
+                        const isTxSelected = selectedTxIds.includes(t.id);
+                        return (
+                          <tr key={t.id} className={`${isTxSelected ? 'bg-indigo-100/50' : 'bg-indigo-50/10 hover:bg-slate-50/50'} transition-colors`}>
+                            {renderTransactionCells(t, false)}
+                          </tr>
+                        );
+                      })}
                     </React.Fragment>
                   );
                 })}
@@ -1761,6 +2060,280 @@ export default function TransactionsManager({
                 id="save-tx-form-btn"
               >
                 Salvar Transação
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Edit Modal */}
+      {isBulkEditModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" id="bulk-edit-modal">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+                  <Edit2 size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">Editar Transações em Lote</h3>
+                  <p className="text-[11px] text-slate-400 font-medium">
+                    {selectedTxIds.length} {selectedTxIds.length === 1 ? 'transação selecionada' : 'transações selecionadas'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsBulkEditModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                id="close-bulk-edit-modal-btn"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Form Body */}
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              <div className="p-3 bg-indigo-50/60 border border-indigo-100 rounded-xl text-xs text-indigo-800 font-medium leading-relaxed">
+                Apenas os campos preenchidos abaixo serão atualizados em todas as <strong>{selectedTxIds.length} transações</strong> selecionadas. Os demais campos permanecerão inalterados.
+              </div>
+
+              {/* Category */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Categoria</label>
+                <select
+                  value={bulkCategory}
+                  onChange={(e) => {
+                    setBulkCategory(e.target.value);
+                    setBulkSubcategory('__keep__');
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                  id="bulk-edit-category-select"
+                >
+                  <option value="__keep__">-- Manter inalterada --</option>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.name}>{cat.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Subcategory (if category changed) */}
+              {bulkCategory !== '__keep__' && (
+                <div className="space-y-1.5 animate-in fade-in duration-150">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subcategoria</label>
+                  <select
+                    value={bulkSubcategory}
+                    onChange={(e) => setBulkSubcategory(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                    id="bulk-edit-subcategory-select"
+                  >
+                    <option value="__keep__">-- Manter inalterada --</option>
+                    <option value="">(Sem subcategoria / Limpar)</option>
+                    {availableSubcategoriesForBulk.map((sub, idx) => (
+                      <option key={idx} value={sub}>{sub}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Account */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Conta</label>
+                <select
+                  value={bulkAccountId}
+                  onChange={(e) => setBulkAccountId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                  id="bulk-edit-account-select"
+                >
+                  <option value="__keep__">-- Manter inalterada --</option>
+                  {accounts.map(acc => (
+                    <option key={acc.id} value={acc.id}>{acc.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Member */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Membro Responsável</label>
+                <select
+                  value={bulkMemberId}
+                  onChange={(e) => setBulkMemberId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                  id="bulk-edit-member-select"
+                >
+                  <option value="__keep__">-- Manter inalterado --</option>
+                  {familyMembers.map(mem => (
+                    <option key={mem.id} value={mem.id}>{mem.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status da Transação</label>
+                <select
+                  value={bulkStatus}
+                  onChange={(e) => setBulkStatus(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                  id="bulk-edit-status-select"
+                >
+                  <option value="__keep__">-- Manter inalterado --</option>
+                  <option value="REALIZADO">Realizado (Efetivado)</option>
+                  <option value="PENDENTE">Pendente</option>
+                </select>
+              </div>
+
+              {/* Date Update Option */}
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={bulkApplyDate}
+                    onChange={(e) => setBulkApplyDate(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    id="bulk-edit-apply-date-checkbox"
+                  />
+                  <span className="text-xs font-bold text-slate-700">Alterar data de todas as selecionadas</span>
+                </label>
+                {bulkApplyDate && (
+                  <input
+                    type="date"
+                    value={bulkDate}
+                    onChange={(e) => setBulkDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                    id="bulk-edit-date-input"
+                  />
+                )}
+              </div>
+
+              {/* Add Tag to all */}
+              <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Adicionar Tag / Marcador</label>
+                <div className="relative">
+                  <Tag className="absolute left-3 top-2.5 text-slate-400" size={14} />
+                  <input
+                    type="text"
+                    value={bulkTag}
+                    onChange={(e) => setBulkTag(e.target.value)}
+                    placeholder="Nome da tag para vincular a todas (ex: Viagem, Reforma)"
+                    className="w-full pl-8 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                    id="bulk-edit-tag-input"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 font-medium">
+                  A tag será adicionada a todas as transações selecionadas sem remover as tags que elas já possuem.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsBulkEditModalOpen(false)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                id="cancel-bulk-edit-btn"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyBulkEdit}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-100/50 transition-all cursor-pointer"
+                id="confirm-bulk-edit-btn"
+              >
+                Aplicar Alterações ({selectedTxIds.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {isBulkDeleteModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" id="bulk-delete-modal">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-rose-50/50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-rose-100 border border-rose-200 flex items-center justify-center text-rose-600">
+                  <Trash2 size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">Excluir Transações em Lote</h3>
+                  <p className="text-[11px] text-rose-500 font-medium">Ação irreversível</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsBulkDeleteModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                id="close-bulk-delete-modal-btn"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Tem certeza de que deseja excluir permanentemente as <strong className="text-slate-800 font-bold">{selectedTxIds.length} transações</strong> selecionadas?
+              </p>
+
+              {/* Financial summary of items to be deleted */}
+              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5 text-xs">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Resumo Financeiro dos Itens Selecionados:</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Total de Receitas:</span>
+                  <span className="font-bold text-emerald-600">
+                    +R$ {selectedIncomesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Total de Despesas:</span>
+                  <span className="font-bold text-rose-600">
+                    -R$ {selectedExpensesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+
+              {/* Transactions preview list */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Itens que serão removidos:</span>
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl bg-slate-50/40">
+                  {selectedTransactions.map((tx) => (
+                    <div key={tx.id} className="p-2.5 flex items-center justify-between text-xs">
+                      <div className="space-y-0.5 max-w-[70%]">
+                        <p className="font-bold text-slate-800 truncate">{tx.notes || tx.category}</p>
+                        <p className="text-[10px] text-slate-400">
+                          {new Date(tx.date).toLocaleDateString('pt-BR')} &bull; {tx.category}
+                        </p>
+                      </div>
+                      <span className={`font-bold ${tx.type === 'income' ? 'text-emerald-600' : 'text-slate-800'}`}>
+                        {tx.type === 'income' ? '+' : '-'} R$ {tx.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsBulkDeleteModalOpen(false)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                id="cancel-bulk-delete-btn"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBulkDelete}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-md shadow-rose-100/50 transition-all cursor-pointer"
+                id="confirm-bulk-delete-btn"
+              >
+                Excluir {selectedTxIds.length} {selectedTxIds.length === 1 ? 'Transação' : 'Transações'}
               </button>
             </div>
           </div>

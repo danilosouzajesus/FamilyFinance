@@ -151,7 +151,7 @@ export function applySuggestionLive(
 export function buildApprovedTransaction(
   pending: Pick<PluggyPendingTx, 'rawDescription' | 'amount' | 'date' | 'type' | 'suggestedCategoryId' | 'suggestedCategory' | 'suggestedSubcategoryId' | 'suggestedSubcategory' | 'suggestedTagIds' | 'aiConfidence' | 'pluggyTransactionId' | 'pluggyItemId' | 'paymentMethod'>,
   ctx: PluggyEngineContext,
-  overrides?: Partial<Pick<Transaction, 'categoryId' | 'category' | 'subcategoryId' | 'subcategory' | 'tagIds' | 'amount' | 'date' | 'notes' | 'accountId' | 'memberId' | 'creditCardId' | 'invoiceId' | 'includeInBalanceSum'>>
+  overrides?: Partial<Pick<Transaction, 'categoryId' | 'category' | 'subcategoryId' | 'subcategory' | 'tagIds' | 'amount' | 'date' | 'notes' | 'accountId' | 'memberId' | 'creditCardId' | 'includeInBalanceSum'>>
 ): Transaction {
   const categoryName = overrides?.category || pending.suggestedCategory;
   const cat = ctx.categories.find(c => c.name.toLowerCase() === categoryName.toLowerCase());
@@ -171,7 +171,6 @@ export function buildApprovedTransaction(
     memberId: overrides?.memberId || 'mem_geral',
     accountId: overrides?.accountId || ctx.accounts?.[0]?.id || 'acc_itau',
     creditCardId: overrides?.creditCardId,
-    invoiceId: overrides?.invoiceId,
     includeInBalanceSum: overrides?.includeInBalanceSum,
     attachmentUrls: [],
     attachmentNames: [],

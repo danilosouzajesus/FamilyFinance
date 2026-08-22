@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getInitialState, saveState, defaultBankConfig } from './initialData';
+import { getInitialState, saveState, defaultBankConfig, DEFAULT_CATEGORIES } from './initialData';
 import { FinancialState } from '@ff/shared';
 
 const STATE_KEY = 'family_finance_state';
@@ -12,9 +12,9 @@ beforeEach(() => {
 });
 
 describe('getInitialState', () => {
-  it('retorna estado vazio sem dados salvos', () => {
+  it('retorna estado com categorias padrão sem dados salvos', () => {
     const state = getInitialState();
-    expect(state.categories).toEqual([]);
+    expect(state.categories).toHaveLength(DEFAULT_CATEGORIES.length);
     expect(state.transactions).toEqual([]);
     expect(state.accounts).toEqual([]);
     expect(state.bankConfig).toEqual(defaultBankConfig);
@@ -39,14 +39,14 @@ describe('getInitialState', () => {
 
     const state = getInitialState();
     expect(state.transactions).toEqual([]);
-    expect(state.categories).toEqual([]);
+    expect(state.categories).toHaveLength(DEFAULT_CATEGORIES.length);
     expect(state.bankConfig).toEqual({ pluggyConnected: true });
   });
 
-  it('retorna estado vazio se o JSON salvo está corrompido', () => {
+  it('retorna estado com categorias padrão se o JSON salvo está corrompido', () => {
     localStorage.setItem(STATE_KEY, '{corrompido');
     const state = getInitialState();
-    expect(state.categories).toEqual([]);
+    expect(state.categories).toHaveLength(DEFAULT_CATEGORIES.length);
     expect(state.transactions).toEqual([]);
   });
 
@@ -74,7 +74,7 @@ describe('saveState', () => {
     saveState(state);
     const raw = localStorage.getItem(STATE_KEY);
     expect(raw).not.toBeNull();
-    expect(JSON.parse(raw as string).categories).toEqual([]);
+    expect(JSON.parse(raw as string).categories).toHaveLength(DEFAULT_CATEGORIES.length);
   });
 
   it('round-trip: saveState + getInitialState retorna mesmo conteúdo', () => {

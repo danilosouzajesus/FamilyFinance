@@ -117,7 +117,7 @@ describe('categorizeTransaction', () => {
     expect(r.categoryName).toBe('Outras Despesas');
   });
   it('usa fallback de receita', () => {
-    const r = categorizeTransaction('PIX RECEBIDO MARIA', 'income', []);
+    const r = categorizeTransaction('LOREM IPSUM FOO BAR', 'income', []);
     expect(r.categoryName).toBe('Outras Receitas');
   });
   it('mapeia para categoria do usuário quando existe', () => {

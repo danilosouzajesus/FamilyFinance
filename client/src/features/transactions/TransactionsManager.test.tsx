@@ -433,4 +433,166 @@ describe('TransactionsManager', () => {
 
     expect(onDelete).toHaveBeenCalledWith('tx-del-1', 'only_this');
   });
+
+  it('permite selecionar múltiplas transações, exibe a barra de ações em lote e calcula totais', () => {
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 'tx-1', notes: 'Salário', amount: 3000, type: 'income' }),
+          makeTx({ id: 'tx-2', notes: 'Mercado', amount: 500, type: 'expense' }),
+          makeTx({ id: 'tx-3', notes: 'Farmácia', amount: 100, type: 'expense' }),
+        ]}
+        categories={[makeCategory()]}
+      />
+    );
+
+    // Barra de ações não deve estar visível inicialmente
+    expect(document.getElementById('tx-bulk-actions-bar')).toBeNull();
+
+    // Seleciona a primeira e a segunda transação
+    const cb1 = document.getElementById('select-tx-tx-1') as HTMLInputElement;
+    const cb2 = document.getElementById('select-tx-tx-2') as HTMLInputElement;
+    expect(cb1).toBeTruthy();
+    expect(cb2).toBeTruthy();
+
+    fireEvent.click(cb1);
+    fireEvent.click(cb2);
+
+    // Barra de ações deve aparecer indicando 2 transações selecionadas
+    expect(document.getElementById('tx-bulk-actions-bar')).toBeInTheDocument();
+    expect(document.getElementById('bulk-selected-count')?.textContent).toContain('2 transações selecionadas');
+    expect(document.getElementById('bulk-selected-totals')?.textContent).toContain('3.000,00');
+    expect(document.getElementById('bulk-selected-totals')?.textContent).toContain('500,00');
+
+    // Botão de desmarcar limpa a seleção
+    const clearBtn = document.getElementById('bulk-clear-btn');
+    expect(clearBtn).toBeTruthy();
+    fireEvent.click(clearBtn!);
+    expect(document.getElementById('tx-bulk-actions-bar')).toBeNull();
+  });
+
+  it('permite selecionar e desmarcar todas as transações pelo checkbox do cabeçalho', () => {
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 'tx-1', notes: 'Tx 1', amount: 100 }),
+          makeTx({ id: 'tx-2', notes: 'Tx 2', amount: 200 }),
+        ]}
+        categories={[makeCategory()]}
+      />
+    );
+
+    const selectAllCb = document.getElementById('select-all-txs-checkbox') as HTMLInputElement;
+    expect(selectAllCb).toBeTruthy();
+    expect(selectAllCb.checked).toBe(false);
+
+    // Seleciona todas
+    fireEvent.click(selectAllCb);
+    expect(document.getElementById('bulk-selected-count')?.textContent).toContain('2 transações selecionadas');
+
+    // Desmarca todas
+    fireEvent.click(selectAllCb);
+    expect(document.getElementById('tx-bulk-actions-bar')).toBeNull();
+  });
+
+  it('permite exclusão em lote de múltiplas transações selecionadas', () => {
+    const onDelete = vi.fn();
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 'tx-1', notes: 'Almoço 1', amount: 50 }),
+          makeTx({ id: 'tx-2', notes: 'Almoço 2', amount: 60 }),
+          makeTx({ id: 'tx-3', notes: 'Almoço 3', amount: 70 }),
+        ]}
+        categories={[makeCategory()]}
+        onDeleteTransaction={onDelete}
+      />
+    );
+
+    // Seleciona tx-1 e tx-3
+    fireEvent.click(document.getElementById('select-tx-tx-1')!);
+    fireEvent.click(document.getElementById('select-tx-tx-3')!);
+
+    // Clica no botão Excluir em Lote
+    const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+    expect(bulkDeleteBtn).toBeTruthy();
+    fireEvent.click(bulkDeleteBtn!);
+
+    // Modal de exclusão em lote aberto
+    expect(document.getElementById('bulk-delete-modal')).toBeInTheDocument();
+    expect(screen.getByText('Excluir Transações em Lote')).toBeInTheDocument();
+
+    // Confirma exclusão
+    const confirmBtn = document.getElementById('confirm-bulk-delete-btn');
+    expect(confirmBtn).toBeTruthy();
+    fireEvent.click(confirmBtn!);
+
+    expect(onDelete).toHaveBeenCalledTimes(2);
+    expect(onDelete).toHaveBeenCalledWith('tx-1', 'only_this');
+    expect(onDelete).toHaveBeenCalledWith('tx-3', 'only_this');
+    expect(document.getElementById('bulk-delete-modal')).toBeNull();
+  });
+
+  it('permite edição em lote de múltiplas transações selecionadas', () => {
+    const onEdit = vi.fn();
+    const catLazer = makeCategory({ id: 'cat-lazer', name: 'Lazer', color: '#10B981' });
+    const acc2 = makeAccount({ id: 'acc-2', name: 'Itaú Cartão' });
+    const mem2 = makeMember({ id: 'mem-2', name: 'Maria' });
+
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 'tx-1', notes: 'Cinema', category: 'Outros', accountId: 'acc_main', memberId: 'mem-1' }),
+          makeTx({ id: 'tx-2', notes: 'Parque', category: 'Outros', accountId: 'acc_main', memberId: 'mem-1' }),
+        ]}
+        categories={[makeCategory(), catLazer]}
+        accounts={[makeAccount(), acc2]}
+        familyMembers={[makeMember(), mem2]}
+        onEditTransaction={onEdit}
+      />
+    );
+
+    // Seleciona todas
+    fireEvent.click(document.getElementById('select-all-txs-checkbox')!);
+
+    // Clica no botão Editar em Lote
+    const bulkEditBtn = document.getElementById('bulk-edit-btn');
+    expect(bulkEditBtn).toBeTruthy();
+    fireEvent.click(bulkEditBtn!);
+
+    // Modal de edição em lote aberto
+    expect(document.getElementById('bulk-edit-modal')).toBeInTheDocument();
+    expect(screen.getByText('Editar Transações em Lote')).toBeInTheDocument();
+
+    // Altera a categoria para 'Lazer' e conta para 'acc-2'
+    fireEvent.change(document.getElementById('bulk-edit-category-select')!, { target: { value: 'Lazer' } });
+    fireEvent.change(document.getElementById('bulk-edit-account-select')!, { target: { value: 'acc-2' } });
+    fireEvent.change(document.getElementById('bulk-edit-member-select')!, { target: { value: 'mem-2' } });
+    fireEvent.change(document.getElementById('bulk-edit-status-select')!, { target: { value: 'REALIZADO' } });
+
+    // Confirma alterações
+    const confirmEditBtn = document.getElementById('confirm-bulk-edit-btn');
+    expect(confirmEditBtn).toBeTruthy();
+    fireEvent.click(confirmEditBtn!);
+
+    expect(onEdit).toHaveBeenCalledTimes(2);
+    expect(onEdit).toHaveBeenCalledWith('tx-1', expect.objectContaining({
+      category: 'Lazer',
+      categoryId: 'cat-lazer',
+      accountId: 'acc-2',
+      memberId: 'mem-2',
+      status: 'REALIZADO'
+    }), 'only_this');
+    expect(onEdit).toHaveBeenCalledWith('tx-2', expect.objectContaining({
+      category: 'Lazer',
+      categoryId: 'cat-lazer',
+      accountId: 'acc-2',
+      memberId: 'mem-2',
+      status: 'REALIZADO'
+    }), 'only_this');
+  });
 });
