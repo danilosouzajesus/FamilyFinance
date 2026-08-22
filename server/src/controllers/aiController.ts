@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { getGeminiClient, generateOfflineAdvisory } from '../services/geminiService';
+import { getGeminiClient, generateOfflineAdvisory, parseStatementWithGemini } from '../services/geminiService';
 
 // AI Advisor / Advisor Chat Endpoint
 export async function advisorHandler(req: Request, res: Response) {
@@ -129,5 +129,30 @@ Diretrizes de resposta:
   } catch (error: any) {
     console.error('AI Advisor error:', error);
     res.status(500).json({ error: error.message || 'Erro interno ao consultar o conselheiro IA.' });
+  }
+}
+
+// Handler para processamento inteligente de extratos via IA
+export async function parseStatementHandler(req: Request, res: Response) {
+  try {
+    const { fileBase64, fileType, fileName } = req.body;
+
+    if (!fileBase64) {
+      return res.status(400).json({ error: 'Nenhum conteúdo de arquivo fornecido (base64 esperado)' });
+    }
+
+    try {
+      getGeminiClient();
+    } catch (err: any) {
+      return res.status(503).json({ 
+        error: 'Chave de API do Gemini não configurada. Configure a variável GEMINI_API_KEY em Configurações > Secrets.' 
+      });
+    }
+
+    const result = await parseStatementWithGemini(fileBase64, fileType || 'application/pdf');
+    res.json(result);
+  } catch (error: any) {
+    console.error('AI statement parsing error:', error);
+    res.status(500).json({ error: error.message || 'Erro ao processar o extrato com Inteligência Artificial.' });
   }
 }

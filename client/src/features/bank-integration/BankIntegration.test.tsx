@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import BankIntegration from './BankIntegration';
+import BankIntegration, { parseInstallmentFromText, formatDescriptionWithInstallment, shiftDateByMonths } from './BankIntegration';
 import { makeCategory, makeSubcategory, makeTag, makeAccount, makeRule, makeTx, noop } from '@/test/fixtures';
 import { PluggyPendingTx, Transaction } from '@ff/shared';
 
@@ -447,7 +447,7 @@ describe('BankIntegration', () => {
       expect(screen.getByText('PIX *PADARIA SÃO JOSÉ')).toBeInTheDocument();
     });
 
-    const mapSelect = screen.getByTitle('Associe a conta/cartão da Pluggy a uma conta cadastrada no sistema') as HTMLSelectElement;
+    const mapSelect = screen.getByTitle('Associe esta operação à conta desejada no app') as HTMLSelectElement;
     expect(Array.from(mapSelect.options).some(o => o.value === 'card_itau')).toBe(true);
 
     fireEvent.change(mapSelect, { target: { value: 'card_itau' } });
@@ -514,7 +514,7 @@ describe('BankIntegration', () => {
       expect(screen.getByText('PIX *PADARIA SÃO JOSÉ')).toBeInTheDocument();
     });
 
-    const rowAccountSelect = screen.getByTitle('Associe a conta/cartão da Pluggy a uma conta cadastrada no sistema');
+    const rowAccountSelect = screen.getByTitle('Associe esta operação à conta desejada no app');
     fireEvent.change(rowAccountSelect, { target: { value: 'a2' } });
 
     await waitFor(() => {
@@ -957,5 +957,125 @@ describe('BankIntegration', () => {
     expect(screen.getByText(/Importação de Extratos Bancários/i)).toBeInTheDocument();
     expect(screen.getByText(/Banco BV \(PDF Nativo\)/i)).toBeInTheDocument();
     expect(screen.getByText(/Extrato PDF Banco BV/i)).toBeInTheDocument();
+    expect(screen.getByText(/Importar lançamentos para a Conta:/i)).toBeInTheDocument();
+  });
+
+  it('permite vincular conta bancária específica para cada operação na lista de conciliação', async () => {
+    mockFetch();
+    pendingDb = [
+      makePending({
+        id: 'pend_1',
+        rawDescription: 'PIX MERCADO EXTRA',
+        amount: 85.5,
+        type: 'expense',
+      }),
+    ];
+    const onImportTransactions = vi.fn();
+    const acc1 = makeAccount({ id: 'acc_1', name: 'Conta Principal (Itaú)' });
+    const acc2 = makeAccount({ id: 'acc_2', name: 'Conta Secundária (Banco BV)' });
+
+    render(
+      <BankIntegration
+        {...baseProps}
+        accounts={[acc1, acc2]}
+        onImportTransactions={onImportTransactions}
+      />
+    );
+
+    // Navega para a aba de conciliação
+    fireEvent.click(screen.getByRole('button', { name: /Painel de Conciliação/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('PIX MERCADO EXTRA')).toBeInTheDocument();
+    });
+
+    // Verifica que o seletor de conta está presente no cabeçalho e na linha
+    expect(screen.getByTitle(/Conta bancária do app para vincular as operações/i)).toBeInTheDocument();
+    const rowAccountSelect = screen.getByTitle(/Associe esta operação à conta desejada no app/i) as HTMLSelectElement;
+    expect(rowAccountSelect).toBeInTheDocument();
+
+    // Altera a conta da operação individualmente para Banco BV
+    fireEvent.change(rowAccountSelect, { target: { value: 'acc_2' } });
+    expect(rowAccountSelect.value).toBe('acc_2');
+
+    // Clica em Aprovar & Lançar na linha
+    fireEvent.click(screen.getByRole('button', { name: /^Aprovar$/i }));
+
+    await waitFor(() => {
+      expect(onImportTransactions).toHaveBeenCalledTimes(1);
+    });
+
+    const imported = onImportTransactions.mock.calls[0][0];
+    expect(imported[0].accountId).toBe('acc_2');
+    expect(imported[0].notes).toBe('PIX MERCADO EXTRA');
+  });
+
+  it('permite alterar a conta em lote para múltiplas transações selecionadas', async () => {
+    mockFetch();
+    pendingDb = [
+      makePending({ id: 'pend_1', rawDescription: 'COMPRA 1', amount: 50 }),
+      makePending({ id: 'pend_2', rawDescription: 'COMPRA 2', amount: 100 }),
+    ];
+    const onImportTransactions = vi.fn();
+    const acc1 = makeAccount({ id: 'acc_1', name: 'Conta 1' });
+    const acc2 = makeAccount({ id: 'acc_2', name: 'Conta 2' });
+
+    render(
+      <BankIntegration
+        {...baseProps}
+        accounts={[acc1, acc2]}
+        onImportTransactions={onImportTransactions}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Painel de Conciliação/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('COMPRA 1')).toBeInTheDocument();
+      expect(screen.getByText('COMPRA 2')).toBeInTheDocument();
+    });
+
+    // Seleciona todas as transações
+    fireEvent.click(screen.getByTitle('Selecionar todas'));
+
+    expect(screen.getByText('2 selecionadas')).toBeInTheDocument();
+
+    // Altera a conta em lote
+    const batchSelect = screen.getByRole('combobox', { name: /Definir conta para as transações selecionadas/i });
+    expect(batchSelect).toBeInTheDocument();
+
+    fireEvent.change(batchSelect, { target: { value: 'acc_2' } });
+
+    // Aprova em lote
+    fireEvent.click(screen.getByRole('button', { name: /Aprovar \(2\)/i }));
+
+    await waitFor(() => {
+      expect(onImportTransactions).toHaveBeenCalledTimes(2);
+    });
+
+    const calls = onImportTransactions.mock.calls;
+    expect(calls[0][0][0].accountId).toBe('acc_2');
+    expect(calls[1][0][0].accountId).toBe('acc_2');
+  });
+
+  describe('utilitários de parcelamento', () => {
+    it('detecta parcelamento a partir do texto da descrição', () => {
+      expect(parseInstallmentFromText('JOAO FREIRE (Parcela 09/12)')).toEqual({ current: 9, total: 12 });
+      expect(parseInstallmentFromText('BAHIA MOVEIS 1/2')).toEqual({ current: 1, total: 2 });
+      expect(parseInstallmentFromText('COMPRA NORMAL')).toBeNull();
+      // Não deve confundir datas comuns como parcelamento
+      expect(parseInstallmentFromText('PADARIA 17/08/2026')).toBeNull();
+    });
+
+    it('formata a descrição corretamente com o parcelamento atualizado', () => {
+      expect(formatDescriptionWithInstallment('BAHIA MOVEIS 1/2', 2, 2)).toBe('BAHIA MOVEIS Parcela 02/02');
+      expect(formatDescriptionWithInstallment('JOAO FREIRE (Parcela 09/12)', 10, 12)).toBe('JOAO FREIRE (Parcela 10/12)');
+      expect(formatDescriptionWithInstallment('COMPRA NORMAL', 1, 3)).toBe('COMPRA NORMAL (Parcela 01/03)');
+    });
+
+    it('desloca datas corretamente por meses', () => {
+      expect(shiftDateByMonths('2026-08-21', 1)).toBe('2026-09-21');
+      expect(shiftDateByMonths('2026-12-25', 1)).toBe('2027-01-25');
+    });
   });
 });

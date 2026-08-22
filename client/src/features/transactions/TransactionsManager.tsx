@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
   Plus, 
   Search, 
@@ -19,9 +19,10 @@ import {
   ChevronUp,
   ArrowUp,
   ArrowDown,
-  Wallet
+  Wallet,
+  ArrowLeftRight
 } from 'lucide-react';
-import { Transaction, Category, Account, FamilyMember, RecurrenceType, TransactionType, Tag as TagType, CreditCard as CreditCardType, Invoice, PeriodPreference } from '@ff/shared';
+import { Transaction, Category, Subcategory, Account, FamilyMember, RecurrenceType, TransactionType, Tag as TagType, CreditCard as CreditCardType, Invoice, PeriodPreference } from '@ff/shared';
 import PeriodSelector from '@/components/PeriodSelector';
 import { fetchAppPreference, saveAppPreference } from '@/lib/supabase';
 import { assignInvoicePeriod, invoiceIdFor, buildInstallmentTransactions, invoiceStatusLabel, parseInvoiceId, dueDateFor } from '@ff/shared';
@@ -29,6 +30,7 @@ import { assignInvoicePeriod, invoiceIdFor, buildInstallmentTransactions, invoic
 interface TransactionsManagerProps {
   transactions: Transaction[];
   categories: Category[];
+  subcategories?: Subcategory[];
   accounts: Account[];
   familyMembers: FamilyMember[];
   allTags: TagType[];
@@ -52,6 +54,7 @@ function resolveTxTagNames(tagIds: string[], allTags: TagType[]): string[] {
 export default function TransactionsManager({
   transactions,
   categories,
+  subcategories = [],
   accounts,
   familyMembers,
   allTags,
@@ -77,6 +80,7 @@ export default function TransactionsManager({
   // UI States
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [confirmDeleteTxId, setConfirmDeleteTxId] = useState<string | null>(null);
   
   // Recurrence confirmation states
   const [recurrenceAction, setRecurrenceAction] = useState<{
@@ -86,7 +90,8 @@ export default function TransactionsManager({
   } | null>(null);
 
   // Form Fields
-  const [type, setType] = useState<TransactionType>('expense');
+  const [type, setType] = useState<TransactionType | 'transfer'>('expense');
+  const [destinationAccountId, setDestinationAccountId] = useState('');
   const [category, setCategory] = useState('');
   const [subcategory, setSubcategory] = useState('');
   const [amount, setAmount] = useState('');
@@ -141,18 +146,68 @@ export default function TransactionsManager({
   // Attachment File Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Memoized available categories for the currently active form type (income vs expense)
+  const availableCategoriesForForm = useMemo(() => {
+    return categories.filter(c => !c.parentId && (c.type === type || c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia')));
+  }, [categories, type]);
+
+  const selectedCategoryObj = useMemo(() => {
+    return categories.find(c => c.name === category && c.type === type) 
+      || categories.find(c => c.name === category);
+  }, [categories, category, type]);
+
+  const availableSubcategoriesForForm = useMemo(() => {
+    if (!selectedCategoryObj) return [];
+    const subsFromCat = selectedCategoryObj.subcategories || [];
+    const subsFromTable = (subcategories || []).filter(s => s.categoryId === selectedCategoryObj.id).map(s => s.name);
+    const subsFromChildren = categories.filter(c => c.parentId === selectedCategoryObj.id && c.type === type).map(c => c.name);
+    return Array.from(new Set([...subsFromCat, ...subsFromTable, ...subsFromChildren].filter(Boolean)));
+  }, [selectedCategoryObj, subcategories, categories, type]);
+
   // Open Form for Adding
   const handleOpenAddForm = () => {
     setEditingTransaction(null);
     setType('expense');
-    setCategory(categories.find(c => c.type === 'expense')?.name || '');
-    setSubcategory('');
+    const firstExpenseCat = categories.find(c => c.type === 'expense' && !c.parentId) || categories.find(c => c.type === 'expense');
+    setCategory(firstExpenseCat?.name || '');
+    const firstExpenseSub = firstExpenseCat?.subcategories?.[0]
+      || subcategories.find(s => s.categoryId === firstExpenseCat?.id)?.name
+      || categories.find(c => c.parentId === firstExpenseCat?.id && c.type === 'expense')?.name
+      || '';
+    setSubcategory(firstExpenseSub);
     setAmount('');
     setDate(new Date().toISOString().split('T')[0]);
     setRecurring('none');
     setNotes('');
     setMemberId(familyMembers[0]?.id || '');
     setAccountId(accounts[0]?.id || '');
+    setDestinationAccountId(accounts.find(a => a.id !== accounts[0]?.id)?.id || accounts[1]?.id || '');
+    setTags([]);
+    setAttachmentName('');
+    setCreditCardId('');
+    setInvoiceId('');
+    setInstallments('1');
+    setValidationError(null);
+    setIsFormOpen(true);
+  };
+
+  // Open Form for Adding Transfer between accounts
+  const handleOpenAddTransferForm = () => {
+    setEditingTransaction(null);
+    setType('transfer');
+    const transfCat = categories.find(c => c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'));
+    setCategory(transfCat?.name || 'Transferências');
+    const transfSub = subcategories.find(s => s.categoryId === transfCat?.id && s.name.toLowerCase().includes('entre contas'))
+      || subcategories.find(s => s.categoryId === transfCat?.id);
+    setSubcategory(transfSub?.name || 'Transferência entre Contas');
+    setAmount('');
+    setDate(new Date().toISOString().split('T')[0]);
+    setRecurring('none');
+    setNotes('');
+    setMemberId(familyMembers[0]?.id || '');
+    const defaultSourceId = accounts[0]?.id || '';
+    setAccountId(defaultSourceId);
+    setDestinationAccountId(accounts.find(a => a.id !== defaultSourceId)?.id || accounts[1]?.id || '');
     setTags([]);
     setAttachmentName('');
     setCreditCardId('');
@@ -165,7 +220,8 @@ export default function TransactionsManager({
   // Open Form for Editing
   const handleOpenEditForm = (t: Transaction) => {
     setEditingTransaction(t);
-    setType(t.type);
+    const isTransfCategory = (t.category || '').toLowerCase().includes('transferência') || (t.category || '').toLowerCase().includes('transferencia');
+    setType(isTransfCategory ? 'transfer' : t.type);
     setCategory(t.category);
     setSubcategory(t.subcategory);
     setAmount(t.amount.toString());
@@ -174,6 +230,8 @@ export default function TransactionsManager({
     setNotes(t.notes);
     setMemberId(t.memberId);
     setAccountId(t.accountId);
+    const otherAccount = accounts.find(a => a.id !== t.accountId)?.id || accounts[0]?.id || '';
+    setDestinationAccountId(otherAccount);
     setTags(resolveTxTagNames(t.tagIds, allTags));
     setAttachmentName(t.attachmentNames?.[0] || '');
     setCreditCardId(t.creditCardId || '');
@@ -216,6 +274,129 @@ export default function TransactionsManager({
   // Submit Form
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (type === 'transfer') {
+      const parsedAmount = parseFloat(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        setValidationError('O valor deve ser maior que zero.');
+        return;
+      }
+      if (!accountId) {
+        setValidationError('Selecione a conta de origem.');
+        return;
+      }
+      if (!destinationAccountId) {
+        setValidationError('Selecione a conta de destino.');
+        return;
+      }
+      if (accountId === destinationAccountId) {
+        setValidationError('A conta de origem e a conta de destino devem ser diferentes.');
+        return;
+      }
+      if (!date) {
+        setValidationError('A data informada é inválida.');
+        return;
+      }
+
+      const sourceAcc = accounts.find(a => a.id === accountId);
+      const destAcc = accounts.find(a => a.id === destinationAccountId);
+      const transfCat = categories.find(c => c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'));
+      const transfSub = subcategories.find(s => s.categoryId === transfCat?.id && s.name.toLowerCase().includes('entre contas'))
+        || subcategories.find(s => s.categoryId === transfCat?.id);
+
+      const tagIds = tags.map((name, i) => {
+        const existing = allTags.find(t => t.name.toLowerCase() === name.toLowerCase());
+        if (existing) return existing.id;
+        const newTag: TagType = { id: `tag_${Date.now()}_${i}`, name, color: DEFAULT_TAG_COLOR };
+        if (onAddTag) onAddTag(newTag);
+        return newTag.id;
+      });
+
+      if (editingTransaction) {
+        // Atualiza a transação atual (origem)
+        onEditTransaction(
+          editingTransaction.id,
+          {
+            type: 'expense',
+            categoryId: transfCat?.id || '',
+            category: transfCat?.name || 'Transferências',
+            subcategoryId: transfSub?.id,
+            subcategory: transfSub?.name || 'Transferência entre Contas',
+            tagIds,
+            amount: parsedAmount,
+            date,
+            recurring,
+            notes: notes ? `${notes} (Destino: ${destAcc?.name || 'Conta Destino'})` : `Transferência para ${destAcc?.name || 'Conta Destino'}`,
+            memberId: memberId || familyMembers[0]?.id || 'mem_geral',
+            accountId,
+            attachmentUrls: attachmentName ? [attachmentName] : [],
+            attachmentNames: attachmentName ? [attachmentName] : [],
+            status: 'REALIZADO',
+          },
+          'only_this'
+        );
+
+        // Gera lançamento correspondente de crédito na conta destino
+        onAddTransaction({
+          type: 'income',
+          categoryId: transfCat?.id || '',
+          category: transfCat?.name || 'Transferências',
+          subcategoryId: transfSub?.id,
+          subcategory: transfSub?.name || 'Transferência entre Contas',
+          tagIds,
+          amount: parsedAmount,
+          date,
+          recurring,
+          notes: notes ? `${notes} (Origem: ${sourceAcc?.name || 'Conta Origem'})` : `Transferência de ${sourceAcc?.name || 'Conta Origem'}`,
+          memberId: memberId || familyMembers[0]?.id || 'mem_geral',
+          accountId: destinationAccountId,
+          attachmentUrls: attachmentName ? [attachmentName] : [],
+          attachmentNames: attachmentName ? [attachmentName] : [],
+          status: 'REALIZADO',
+        });
+      } else {
+        // 1. Débito na conta de origem (Despesa)
+        onAddTransaction({
+          type: 'expense',
+          categoryId: transfCat?.id || '',
+          category: transfCat?.name || 'Transferências',
+          subcategoryId: transfSub?.id,
+          subcategory: transfSub?.name || 'Transferência entre Contas',
+          tagIds,
+          amount: parsedAmount,
+          date,
+          recurring,
+          notes: notes ? `${notes} (Destino: ${destAcc?.name || 'Conta Destino'})` : `Transferência para ${destAcc?.name || 'Conta Destino'}`,
+          memberId: memberId || familyMembers[0]?.id || 'mem_geral',
+          accountId,
+          attachmentUrls: attachmentName ? [attachmentName] : [],
+          attachmentNames: attachmentName ? [attachmentName] : [],
+          status: 'REALIZADO',
+        });
+
+        // 2. Crédito na conta de destino (Receita)
+        onAddTransaction({
+          type: 'income',
+          categoryId: transfCat?.id || '',
+          category: transfCat?.name || 'Transferências',
+          subcategoryId: transfSub?.id,
+          subcategory: transfSub?.name || 'Transferência entre Contas',
+          tagIds,
+          amount: parsedAmount,
+          date,
+          recurring,
+          notes: notes ? `${notes} (Origem: ${sourceAcc?.name || 'Conta Origem'})` : `Transferência de ${sourceAcc?.name || 'Conta Origem'}`,
+          memberId: memberId || familyMembers[0]?.id || 'mem_geral',
+          accountId: destinationAccountId,
+          attachmentUrls: attachmentName ? [attachmentName] : [],
+          attachmentNames: attachmentName ? [attachmentName] : [],
+          status: 'REALIZADO',
+        });
+      }
+
+      setIsFormOpen(false);
+      return;
+    }
 
     // Validations
     const parsedAmount = parseFloat(amount);
@@ -318,9 +499,7 @@ export default function TransactionsManager({
         transactionId: id
       });
     } else {
-      if (window.confirm('Tem certeza de que deseja excluir esta transação?')) {
-        onDeleteTransaction(id, 'only_this');
-      }
+      setConfirmDeleteTxId(id);
     }
   };
 
@@ -604,9 +783,6 @@ export default function TransactionsManager({
     );
   };
 
-  // Selected Category Object to list correct subcategories
-  const selectedCategoryObj = categories.find(c => c.name === category);
-
   // Selected credit card & invoice options for the form
   const selectedCardObj = creditCards.find(c => c.id === creditCardId);
   const cardInvoiceOptions = Array.from(new Set([
@@ -627,13 +803,22 @@ export default function TransactionsManager({
           <h1 className="text-xl font-display font-extrabold text-slate-900 tracking-tight">Controle de Despesas e Receitas</h1>
           <p className="text-slate-500 text-xs mt-0.5 font-medium">Gerencie os fluxos monetários da sua família de forma granular</p>
         </div>
-        <button
-          onClick={handleOpenAddForm}
-          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-100/50 transition-all cursor-pointer"
-          id="add-tx-btn"
-        >
-          <Plus size={16} /> Nova Transação
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={handleOpenAddTransferForm}
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200/80 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-sm"
+            id="add-transfer-btn"
+          >
+            <ArrowLeftRight size={15} /> Transferência entre Contas
+          </button>
+          <button
+            onClick={handleOpenAddForm}
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-100/50 transition-all cursor-pointer"
+            id="add-tx-btn"
+          >
+            <Plus size={16} /> Nova Transação
+          </button>
+        </div>
       </div>
 
       {/* Period Selector */}
@@ -692,9 +877,13 @@ export default function TransactionsManager({
               id="filter-category-select"
             >
               <option value="all">Todas as categorias</option>
-              {categories.map(c => (
-                <option key={c.id} value={c.name}>{c.name}</option>
-              ))}
+              {categories
+                .filter(c => filterType === 'all' || c.type === filterType)
+                .map(c => (
+                  <option key={c.id} value={c.name}>
+                    {c.name} {filterType === 'all' ? `(${c.type === 'income' ? 'Receita' : 'Despesa'})` : ''}
+                  </option>
+                ))}
             </select>
           </div>
 
@@ -1083,6 +1272,47 @@ export default function TransactionsManager({
         </div>
       )}
 
+      {/* Delete Confirmation Modal */}
+      {confirmDeleteTxId && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" id="delete-tx-modal">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center shrink-0">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-800">Excluir Transação</h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Tem certeza de que deseja excluir esta transação? Esta ação não poderá ser desfeita.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteTxId(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors cursor-pointer"
+                id="cancel-delete-tx-btn"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteTransaction(confirmDeleteTxId, 'only_this');
+                  setConfirmDeleteTxId(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                id="confirm-delete-tx-btn"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Inclusão / Edição Slide-over Modal Form */}
       {isFormOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-end">
@@ -1116,14 +1346,20 @@ export default function TransactionsManager({
               {/* Type Switcher */}
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Tipo de Transação</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-1.5">
                   <button
                     type="button"
                     onClick={() => {
                       setType('expense');
-                      setCategory(categories.find(c => c.type === 'expense')?.name || '');
+                      const catObj = categories.find(c => c.type === 'expense' && !c.parentId) || categories.find(c => c.type === 'expense');
+                      setCategory(catObj?.name || '');
+                      const firstSub = catObj?.subcategories?.[0]
+                        || subcategories.find(s => s.categoryId === catObj?.id)?.name
+                        || categories.find(c => c.parentId === catObj?.id && c.type === 'expense')?.name
+                        || '';
+                      setSubcategory(firstSub);
                     }}
-                    className={`py-2 px-4 rounded-xl text-xs font-bold text-center border transition-all cursor-pointer ${
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold text-center border transition-all cursor-pointer ${
                       type === 'expense'
                         ? 'bg-rose-50 border-rose-200 text-rose-600'
                         : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
@@ -1136,9 +1372,15 @@ export default function TransactionsManager({
                     type="button"
                     onClick={() => {
                       setType('income');
-                      setCategory(categories.find(c => c.type === 'income')?.name || '');
+                      const catObj = categories.find(c => c.type === 'income' && !c.parentId) || categories.find(c => c.type === 'income');
+                      setCategory(catObj?.name || '');
+                      const firstSub = catObj?.subcategories?.[0]
+                        || subcategories.find(s => s.categoryId === catObj?.id)?.name
+                        || categories.find(c => c.parentId === catObj?.id && c.type === 'income')?.name
+                        || '';
+                      setSubcategory(firstSub);
                     }}
-                    className={`py-2 px-4 rounded-xl text-xs font-bold text-center border transition-all cursor-pointer ${
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold text-center border transition-all cursor-pointer ${
                       type === 'income'
                         ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
                         : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
@@ -1146,6 +1388,28 @@ export default function TransactionsManager({
                     id="tx-form-type-income"
                   >
                     Receita (+)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setType('transfer');
+                      const transfCat = categories.find(c => c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'));
+                      setCategory(transfCat?.name || 'Transferências');
+                      const transfSub = subcategories.find(s => s.categoryId === transfCat?.id && s.name.toLowerCase().includes('entre contas'))
+                        || subcategories.find(s => s.categoryId === transfCat?.id);
+                      setSubcategory(transfSub?.name || 'Transferência entre Contas');
+                      if (!destinationAccountId) {
+                        setDestinationAccountId(accounts.find(a => a.id !== accountId)?.id || '');
+                      }
+                    }}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold text-center border transition-all cursor-pointer ${
+                      type === 'transfer'
+                        ? 'bg-violet-50 border-violet-200 text-violet-700 font-extrabold'
+                        : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                    }`}
+                    id="tx-form-type-transfer"
+                  >
+                    Transferência ⇄
                   </button>
                 </div>
               </div>
@@ -1187,77 +1451,138 @@ export default function TransactionsManager({
                 </div>
               </div>
 
-              {/* Category and Subcategory row */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* Category Selection */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Categoria*</label>
-                  <select
-                    value={category}
-                    required
-                    onChange={(e) => {
-                      setCategory(e.target.value);
-                      const catObj = categories.find(c => c.name === e.target.value);
-                      setSubcategory(catObj?.subcategories?.length ? catObj.subcategories[0] : '');
-                    }}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
-                    id="tx-form-category"
-                  >
-                    {categories.filter(c => c.type === type).map(c => (
-                      <option key={c.id} value={c.name}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
+              {type === 'transfer' ? (
+                /* Transfer Account Selection Box */
+                <div className="space-y-4 bg-violet-50/50 p-4 rounded-2xl border border-violet-100">
+                  <div className="flex items-center gap-2 text-violet-800 text-xs font-bold border-b border-violet-100/80 pb-2">
+                    <ArrowLeftRight size={15} />
+                    <span>Contas Envolvidas na Transferência</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider">Conta Origem (Saída)*</label>
+                      <select
+                        value={accountId}
+                        onChange={(e) => setAccountId(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-violet-500"
+                        id="tx-form-source-account"
+                      >
+                        {accounts.map(a => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                      </select>
+                    </div>
 
-                {/* Subcategory selection */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subcategoria</label>
-                  <select
-                    value={subcategory}
-                    onChange={(e) => setSubcategory(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
-                    id="tx-form-subcategory"
-                  >
-                    <option value="">Nenhuma</option>
-                    {(selectedCategoryObj?.subcategories ?? []).map((sub, i) => (
-                      <option key={i} value={sub}>{sub}</option>
-                    ))}
-                  </select>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider">Conta Destino (Entrada)*</label>
+                      <select
+                        value={destinationAccountId}
+                        onChange={(e) => setDestinationAccountId(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-violet-500"
+                        id="tx-form-dest-account"
+                      >
+                        {accounts.map(a => (
+                          <option key={a.id} value={a.id} disabled={a.id === accountId}>
+                            {a.name} {a.id === accountId ? '(Mesma conta)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider">Membro Responsável</label>
+                    <select
+                      value={memberId}
+                      onChange={(e) => setMemberId(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-violet-500"
+                      id="tx-form-transfer-member"
+                    >
+                      {familyMembers.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Category and Subcategory row */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Category Selection */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Categoria*</label>
+                      <select
+                        value={category}
+                        required
+                        onChange={(e) => {
+                          const newCatName = e.target.value;
+                          setCategory(newCatName);
+                          const catObj = categories.find(c => c.name === newCatName && c.type === type) || categories.find(c => c.name === newCatName);
+                          const firstSub = catObj?.subcategories?.[0]
+                            || subcategories.find(s => s.categoryId === catObj?.id)?.name
+                            || categories.find(c => c.parentId === catObj?.id && c.type === type)?.name
+                            || '';
+                          setSubcategory(firstSub);
+                        }}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                        id="tx-form-category"
+                      >
+                        {availableCategoriesForForm.map(c => (
+                          <option key={c.id} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
 
-              {/* Accounts & Members row */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* Account */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Conta / Cartão</label>
-                  <select
-                    value={accountId}
-                    onChange={(e) => setAccountId(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
-                    id="tx-form-account"
-                  >
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.name}</option>
-                    ))}
-                  </select>
-                </div>
+                    {/* Subcategory selection */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subcategoria</label>
+                      <select
+                        value={subcategory}
+                        onChange={(e) => setSubcategory(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                        id="tx-form-subcategory"
+                      >
+                        <option value="">Nenhuma</option>
+                        {availableSubcategoriesForForm.map((sub, i) => (
+                          <option key={i} value={sub}>{sub}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
-                {/* Family Member */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Membro Responsável</label>
-                  <select
-                    value={memberId}
-                    onChange={(e) => setMemberId(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
-                    id="tx-form-member"
-                  >
-                    {familyMembers.map(m => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                  {/* Accounts & Members row */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Account */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Conta / Cartão</label>
+                      <select
+                        value={accountId}
+                        onChange={(e) => setAccountId(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                        id="tx-form-account"
+                      >
+                        {accounts.map(a => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Family Member */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Membro Responsável</label>
+                      <select
+                        value={memberId}
+                        onChange={(e) => setMemberId(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:border-indigo-500 transition-colors"
+                        id="tx-form-member"
+                      >
+                        {familyMembers.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {/* Credit Card Purchase */}
               {type === 'expense' && creditCards.length > 0 && (

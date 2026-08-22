@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 // Único ponto que importa @google/genai no projeto. Isola a inicialização
 // do client para que nenhuma outra camada dependa da SDK diretamente.
@@ -20,6 +20,85 @@ export function getGeminiClient(): GoogleGenAI {
     });
   }
   return aiClient;
+}
+
+/**
+ * Analisa e extrai dados de extratos bancários (incluindo PDFs digitalizados ou imagens) via Gemini.
+ */
+export async function parseStatementWithGemini(fileBase64: string, fileType: string): Promise<any> {
+  const ai = getGeminiClient();
+
+  const prompt = `Você é um leitor de extratos bancários e faturas de cartão de crédito de alta precisão especializado em bancos brasileiros (Itaú, Banco BV, Santander, Nubank, Banco do Brasil, Bradesco, Caixa, etc.).
+Analise este arquivo (pode ser um extrato de conta corrente, fatura de cartão de crédito nativa ou digitalizada, ou imagem) e extraia de forma estruturada:
+1. Metadados do extrato ou cartão de crédito:
+   - Nome do Banco (ex: "Banco Santander", "Banco Itaú", "Banco BV")
+   - Código do Banco (ex: "033" para Santander, "341" para Itaú, "413" para BV)
+   - Agência (se houver, ex: "0350")
+   - Conta Corrente ou número final do Cartão de Crédito (ex: "21911-9", "4258 XXXX XXXX 8773")
+   - Nome do titular da conta ou do cartão (ex: "DANILO DE SOUZA JESUS")
+   - Período do extrato ou período de compras da fatura (ex: "17/07/2026 a 17/08/2026")
+   - Saldo disponível ou valor total da fatura (no caso de faturas a pagar, represente como saldo disponível negativo)
+2. Todas as transações financeiras reais de despesa (compras) ou receita (créditos/pagamentos de fatura/estornos).
+   - Ignore linhas informativas de totais ou resumos, como "SALDO ANTERIOR", "SALDO TOTAL", "LIMITE CONTRATADO", "PAGAMENTO MÍNIMO", "VALOR TOTAL".
+   - Extraia a data no formato ISO "YYYY-MM-DD" (se o ano não estiver evidente, assuma o ano vigente 2026).
+   - Extraia a descrição literal e precisa da transação. Se for uma compra parcelada, tente incluir a informação da parcela na descrição (ex: "BAHIA MOVEIS (Parcela 02/05)").
+   - Identifique o tipo de transação:
+     * Para extratos normais: "income" para créditos/receitas e "expense" para débitos/despesas/tarifas.
+     * Para faturas de cartão de crédito: "expense" para compras/juros/tarifas (valores positivos na fatura) e "income" para pagamentos de fatura, cashback ou estornos (valores negativos na fatura).
+   - O valor (amount) deve ser sempre um número decimal positivo que representa o valor absoluto da transação.
+
+Retorne estritamente o JSON estruturado conforme o schema solicitado.`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3.7-flash',
+    contents: [
+      {
+        inlineData: {
+          mimeType: fileType,
+          data: fileBase64,
+        },
+      },
+      prompt,
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          bankName: { type: Type.STRING },
+          bankCode: { type: Type.STRING },
+          agency: { type: Type.STRING },
+          accountNumber: { type: Type.STRING },
+          holderName: { type: Type.STRING },
+          period: { type: Type.STRING },
+          availableBalance: { type: Type.NUMBER },
+          transactions: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                date: { type: Type.STRING, description: 'Format: YYYY-MM-DD' },
+                description: { type: Type.STRING },
+                type: { type: Type.STRING, description: '"income" or "expense"' },
+                amount: { type: Type.NUMBER, description: 'Absolute positive value of transaction' },
+                paymentMethod: { type: Type.STRING, description: 'e.g., PIX, Boleto, Cartão, Transferência, etc.' },
+                balanceAfter: { type: Type.NUMBER, description: 'Opcional. Saldo da conta após a transação se disponível.' }
+              },
+              required: ['date', 'description', 'type', 'amount']
+            }
+          }
+        },
+        required: ['transactions']
+      }
+    }
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error('Nenhuma resposta gerada pela IA.');
+  }
+
+  return JSON.parse(text);
 }
 
 // Fallback offline: relatório financeiro local, sem chamada à IA.

@@ -33,41 +33,82 @@ export async function extractTextFromPdf(data: ArrayBuffer | Uint8Array): Promis
     
     const items = textContent.items as Array<{ str: string; transform: number[] }>;
     
-    // Agrupa itens pela coordenada Y (linhas no documento)
-    const linesMap = new Map<number, Array<{ x: number; str: string }>>();
-    
-    for (const item of items) {
-      if (!item.str || !item.str.trim()) continue;
-      const y = Math.round(item.transform[5]);
-      const x = item.transform[4];
+    const pageTextSummary = items.map(it => it.str).join(' ');
+    const isSantanderInvoice = /SANTANDER/i.test(pageTextSummary) && (/fatura/i.test(pageTextSummary) || /Detalhamento/i.test(pageTextSummary));
+
+    if (isSantanderInvoice) {
+      // Divide em coluna esquerda (X < 285) e direita (X >= 285)
+      const leftItems = items.filter(item => item.transform[4] < 285 && item.str && item.str.trim());
+      const rightItems = items.filter(item => item.transform[4] >= 285 && item.str && item.str.trim());
+
+      const processColumn = (colItems: Array<{ str: string; transform: number[] }>) => {
+        const linesMap = new Map<number, Array<{ x: number; str: string }>>();
+        for (const item of colItems) {
+          if (!item.str || !item.str.trim()) continue;
+          const y = Math.round(item.transform[5]);
+          const x = item.transform[4];
+          let matchedY: number | null = null;
+          for (const existingY of linesMap.keys()) {
+            if (Math.abs(existingY - y) <= 3) {
+              matchedY = existingY;
+              break;
+            }
+          }
+          if (matchedY !== null) {
+            linesMap.get(matchedY)!.push({ x, str: item.str });
+          } else {
+            linesMap.set(y, [{ x, str: item.str }]);
+          }
+        }
+        const sortedY = Array.from(linesMap.keys()).sort((a, b) => b - a);
+        return sortedY.map(y => {
+          const lineItems = linesMap.get(y)!;
+          lineItems.sort((a, b) => a.x - b.x);
+          return lineItems.map(item => item.str.trim()).filter(Boolean).join(' ');
+        });
+      };
+
+      const leftLines = processColumn(leftItems);
+      const rightLines = processColumn(rightItems);
+
+      pageTexts.push([...leftLines, ...rightLines].join('\n'));
+    } else {
+      // Agrupa itens pela coordenada Y (linhas no documento)
+      const linesMap = new Map<number, Array<{ x: number; str: string }>>();
       
-      // Procura linha existente com tolerância de 3px
-      let matchedY: number | null = null;
-      for (const existingY of linesMap.keys()) {
-        if (Math.abs(existingY - y) <= 3) {
-          matchedY = existingY;
-          break;
+      for (const item of items) {
+        if (!item.str || !item.str.trim()) continue;
+        const y = Math.round(item.transform[5]);
+        const x = item.transform[4];
+        
+        // Procura linha existente com tolerância de 3px
+        let matchedY: number | null = null;
+        for (const existingY of linesMap.keys()) {
+          if (Math.abs(existingY - y) <= 3) {
+            matchedY = existingY;
+            break;
+          }
+        }
+        
+        if (matchedY !== null) {
+          linesMap.get(matchedY)!.push({ x, str: item.str });
+        } else {
+          linesMap.set(y, [{ x, str: item.str }]);
         }
       }
       
-      if (matchedY !== null) {
-        linesMap.get(matchedY)!.push({ x, str: item.str });
-      } else {
-        linesMap.set(y, [{ x, str: item.str }]);
-      }
-    }
-    
-    // Ordena as linhas do topo para o rodapé (Y decrescente no PDF)
-    const sortedY = Array.from(linesMap.keys()).sort((a, b) => b - a);
-    
-    const pageLines = sortedY.map(y => {
-      const lineItems = linesMap.get(y)!;
-      // Ordena da esquerda para a direita (X crescente)
-      lineItems.sort((a, b) => a.x - b.x);
-      return lineItems.map(item => item.str.trim()).filter(Boolean).join(' ');
-    });
+      // Ordena as linhas do topo para o rodapé (Y decrescente no PDF)
+      const sortedY = Array.from(linesMap.keys()).sort((a, b) => b - a);
+      
+      const pageLines = sortedY.map(y => {
+        const lineItems = linesMap.get(y)!;
+        // Ordena da esquerda para a direita (X crescente)
+        lineItems.sort((a, b) => a.x - b.x);
+        return lineItems.map(item => item.str.trim()).filter(Boolean).join(' ');
+      });
 
-    pageTexts.push(pageLines.join('\n'));
+      pageTexts.push(pageLines.join('\n'));
+    }
   }
 
   return pageTexts.join('\n\n');

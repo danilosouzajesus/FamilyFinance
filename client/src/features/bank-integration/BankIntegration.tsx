@@ -20,11 +20,12 @@ import {
   Plus,
   Filter,
   Eye,
-  EyeOff
+  EyeOff,
+  ArrowLeftRight
 } from 'lucide-react';
 import { Category, Account, Transaction, AutomationRule, Subcategory, Tag, PluggyPendingTx, PluggyConnection, PluggyPendingStatus, PluggyAccountInfo, Investment, CreditCard } from '@ff/shared';
 import { applyRulesToTx, RuleContext } from '@ff/shared';
-import { buildApprovedTransaction, applySuggestionLive } from '@ff/shared';
+import { buildApprovedTransaction, applySuggestionLive, assignInvoicePeriod, invoiceIdFor } from '@ff/shared';
 import { inferPaymentMethod, RawPluggyInvestment, rawInvestmentToInvestmentFields, ParsedBankStatementResult } from '@ff/shared';
 import { parsePdfBankStatement } from '../../lib/parsers/pdfStatementExtractor';
 
@@ -44,6 +45,62 @@ interface BankIntegrationProps {
   userId?: string;
 }
 
+export function parseInstallmentFromText(description: string): { current: number; total: number } | null {
+  const explicitMatch = description.match(/Parcela\s+(\d+)\s*[\/de]\s*(\d+)/i) ||
+                        description.match(/(\d+)\s*de\s*(\d+)/i);
+  if (explicitMatch) {
+    const current = parseInt(explicitMatch[1], 10);
+    const total = parseInt(explicitMatch[2], 10);
+    if (current >= 1 && total >= 1 && current <= total && total <= 99) {
+      return { current, total };
+    }
+  }
+
+  const parensMatch = description.match(/\((\d+)\s*[\/]\s*(\d+)\)/);
+  if (parensMatch) {
+    const current = parseInt(parensMatch[1], 10);
+    const total = parseInt(parensMatch[2], 10);
+    if (current >= 1 && total >= 1 && current <= total && total <= 99) {
+      return { current, total };
+    }
+  }
+
+  const endMatch = description.match(/\b(\d+)\s*\/\s*(\d+)\b/);
+  if (endMatch) {
+    const current = parseInt(endMatch[1], 10);
+    const total = parseInt(endMatch[2], 10);
+    if (current >= 1 && total >= 2 && current <= total && total <= 99) {
+      return { current, total };
+    }
+  }
+
+  return null;
+}
+
+export function formatDescriptionWithInstallment(description: string, current: number, total: number): string {
+  const regexes = [
+    /(?:Parcela\s+)?\d+\s*de\s*\d+/i,
+    /(?:Parcela\s+)?\d+\s*[\/]\s*\d+/i
+  ];
+  for (const regex of regexes) {
+    if (regex.test(description)) {
+      return description.replace(regex, `Parcela ${String(current).padStart(2, '0')}/${String(total).padStart(2, '0')}`);
+    }
+  }
+  return `${description} (Parcela ${String(current).padStart(2, '0')}/${String(total).padStart(2, '0')})`;
+}
+
+export function shiftDateByMonths(dateStr: string, months: number): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  if (isNaN(d.getTime())) return dateStr;
+  d.setMonth(d.getMonth() + months);
+  
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 interface PendingFileTx {
   id: string;
   description: string;
@@ -56,6 +113,8 @@ interface PendingFileTx {
   confidence: number;
   accepted?: boolean;
   matched?: boolean; // já existe transação com mesmo valor e data ±3 dias
+  currentInstallment?: number;
+  installmentsCount?: number;
 }
 
 // Linha unificada de conciliação (vinda da Pluggy ou de arquivo PDF/OFX/CSV)
@@ -76,10 +135,15 @@ interface ConciliationRow {
   pluggyTransactionId?: string;
   pluggyPendingId?: string; // id da pendência no servidor
   accountId?: string; // id da conta/cartão de origem na Pluggy
+  targetAppAccountId?: string; // id da conta do app para vincular esta transação
+  destinationAppAccountId?: string; // id da conta par em caso de transferência
   status?: PluggyPendingStatus;
   suggestedReconcileTransactionId?: string | null;
   matched?: boolean;
   accepted?: boolean;
+  customInvoiceId?: string;
+  currentInstallment?: number;
+  installmentsCount?: number;
 }
 
 // Ambiente Pluggy: em dev (npm run dev) o widget inclui o conector Sandbox (Pluggy Bank)
@@ -220,6 +284,8 @@ export default function BankIntegration({
   const [pendingTxs, setPendingTxs] = useState<ConciliationRow[]>([]);
   const [reconciledCount, setReconciledCount] = useState(0);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [isAiParsing, setIsAiParsing] = useState(false);
+  const [aiParsingMessage, setAiParsingMessage] = useState<string | null>(null);
   const [pluggyNotice, setPluggyNotice] = useState<string | null>(null);
 
   const [targetAccountId, setTargetAccountId] = useState(accounts[0]?.id || '');
@@ -291,6 +357,7 @@ export default function BankIntegration({
       ...rows.map((tx, i) => {
         const cat = categories.find(c => c.name.toLowerCase() === tx.suggestedCategory.toLowerCase());
         const sub = subcategories.find(s => s.name.toLowerCase() === tx.suggestedSubcategory?.toLowerCase() && s.categoryId === cat?.id);
+        const parsedInst = parseInstallmentFromText(tx.description);
         return {
           ...tx,
           id: `pend_${Date.now()}_${i}`,
@@ -298,7 +365,10 @@ export default function BankIntegration({
           suggestedCategoryId: cat?.id,
           suggestedSubcategoryId: sub?.id,
           suggestedTagIds: [],
+          targetAppAccountId: targetAccountId,
           matched: tx.matched ?? findMatch(tx),
+          currentInstallment: tx.currentInstallment ?? parsedInst?.current,
+          installmentsCount: tx.installmentsCount ?? parsedInst?.total,
         } as ConciliationRow;
       }),
       ...prev,
@@ -320,6 +390,7 @@ export default function BankIntegration({
       },
       { categories, subcategories, tags, accounts, transactions, automationRules }
     );
+    const parsedInst = parseInstallmentFromText(p.rawDescription);
     return {
       id: p.id,
       source: 'PLUGGY',
@@ -340,6 +411,8 @@ export default function BankIntegration({
       status: p.status,
       suggestedReconcileTransactionId: refined.suggestedReconcileTransactionId,
       matched: !!refined.suggestedReconcileTransactionId,
+      currentInstallment: parsedInst?.current,
+      installmentsCount: parsedInst?.total,
     };
   }, [categories, subcategories, tags, accounts, transactions, automationRules]);
 
@@ -663,19 +736,55 @@ export default function BankIntegration({
     }
   };
 
-  // Resolve a conta/cartão do app para uma pendência: usa o mapeamento manual se existir,
-  // senão a "Conta de Destino" escolhida no cabeçalho. Quando o alvo é um cartão de
+  // Resolve a conta/cartão do app para uma pendência: usa a conta específica escolhida para a linha,
+  // senão o mapeamento manual (Pluggy), senão a "Conta de Destino" escolhida no cabeçalho. Quando o alvo é um cartão de
   // crédito, retorna também o creditCardId para a transação ser registrada na fatura.
-  const resolveAppTarget = useCallback((row: ConciliationRow): { accountId: string; creditCardId?: string; includeInBalanceSum?: boolean } => {
-    const mappedId = (row.accountId && accountMappings[row.accountId]) || '';
-    const targetId = mappedId || targetAccountId;
-    const card = creditCards.find(c => c.id === targetId);
+  const resolveAppTarget = useCallback((row: ConciliationRow): { accountId: string; creditCardId?: string; invoiceId?: string; includeInBalanceSum?: boolean } => {
+    const chosenId = row.targetAppAccountId || (row.accountId && accountMappings[row.accountId]) || (row.source !== 'PLUGGY' && row.accountId) || targetAccountId;
+    const card = creditCards.find(c => c.id === chosenId);
     if (card) {
       // Compras de cartão apontam para o cartão (fatura) e não debitam o saldo da conta.
-      return { accountId: card.accountId || targetId, creditCardId: card.id, includeInBalanceSum: false };
+      let invId = row.customInvoiceId;
+      if (!invId || !invId.startsWith(`${card.id}_`)) {
+        const { year, month } = assignInvoicePeriod(card, row.date);
+        invId = invoiceIdFor(card.id, year, month);
+      }
+      return { 
+        accountId: card.accountId || chosenId, 
+        creditCardId: card.id, 
+        invoiceId: invId,
+        includeInBalanceSum: false 
+      };
     }
-    return { accountId: targetId };
+    return { accountId: chosenId || targetAccountId };
   }, [accountMappings, targetAccountId, creditCards]);
+
+  const handleRowAccountChange = (rowId: string, newAccountId: string) => {
+    setPendingTxs(prev => prev.map(t => {
+      if (t.id === rowId) {
+        return { ...t, targetAppAccountId: newAccountId };
+      }
+      return t;
+    }));
+    const row = pendingTxs.find(t => t.id === rowId);
+    if (row?.source === 'PLUGGY' && row.accountId && newAccountId) {
+      handleMapAccount(row.accountId, newAccountId);
+    }
+  };
+
+  const handleRowDestinationAccountChange = (rowId: string, destAccountId: string) => {
+    setPendingTxs(prev => prev.map(t => t.id === rowId ? { ...t, destinationAppAccountId: destAccountId } : t));
+  };
+
+  const handleApplyTargetAccountToAll = (newAccId: string) => {
+    setTargetAccountId(newAccId);
+    setPendingTxs(prev => prev.map(t => ({ ...t, targetAppAccountId: newAccId })));
+  };
+
+  const handleBatchSetAccount = (newAccId: string) => {
+    if (!newAccId || selectedIds.length === 0) return;
+    setPendingTxs(prev => prev.map(t => selectedIds.includes(t.id) ? { ...t, targetAppAccountId: newAccId } : t));
+  };
 
   // Salva o mapeamento de uma conta/cartão da Pluggy para uma conta do app
   const handleMapAccount = async (pluggyAccountId: string, appAccountId: string) => {
@@ -738,19 +847,64 @@ export default function BankIntegration({
   const processFile = async (file: File) => {
     setUploadedFileName(file.name);
     setParseError(null);
+    setPdfMeta(null);
+    setIsAiParsing(false);
+    setAiParsingMessage(null);
     const isPDF = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
 
     if (isPDF) {
       try {
-        const result = await parsePdfBankStatement(file);
-        if (!result || result.transactions.length === 0) {
+        let result = await parsePdfBankStatement(file);
+
+        // Fallback para OCR Inteligente com Gemini se o extrato local falhar ou não achar transações
+        if (!result || !result.transactions || result.transactions.length === 0) {
+          console.log("Nenhuma transação encontrada localmente. Iniciando OCR Inteligente via Gemini...");
+          setIsAiParsing(true);
+          setAiParsingMessage("Identificamos que este PDF pode ser uma imagem escaneada. Processando com Inteligência Artificial...");
+
+          // Converte o arquivo para base64
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => {
+              const resultStr = String(reader.result || '');
+              const commaIdx = resultStr.indexOf(',');
+              if (commaIdx !== -1) {
+                resolve(resultStr.substring(commaIdx + 1));
+              } else {
+                resolve(resultStr);
+              }
+            };
+            reader.onerror = (e) => reject(e);
+          });
+
+          // Envia para o endpoint do backend
+          const response = await fetch('/api/ai/parse-statement', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileBase64: base64,
+              fileType: file.type || 'application/pdf',
+              fileName: file.name
+            })
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || 'Erro ao processar o extrato com Inteligência Artificial.');
+          }
+
+          result = await response.json();
+        }
+
+        if (!result || !result.transactions || result.transactions.length === 0) {
           setParseError('Nenhuma transação foi identificada no arquivo PDF. Verifique se é um extrato bancário suportado (ex: Banco BV, Itaú, Nubank, etc.).');
           return;
         }
 
         setPdfMeta(result);
 
-        // Se for do Banco BV, tenta encontrar a conta correspondente
+        // Tenta encontrar a conta correspondente
         if (result.bankCode === '413' || result.bankName?.toLowerCase().includes('bv')) {
           const matchedAcc = accounts.find(a => 
             a.name.toLowerCase().includes('bv') || 
@@ -760,23 +914,35 @@ export default function BankIntegration({
           if (matchedAcc) {
             setTargetAccountId(matchedAcc.id);
           }
+        } else if (result.bankCode === '341' || result.bankName?.toLowerCase().includes('itau') || result.bankName?.toLowerCase().includes('itaú')) {
+          const matchedAcc = accounts.find(a => 
+            a.name.toLowerCase().includes('itau') || 
+            a.name.toLowerCase().includes('itaú') ||
+            (result.accountNumber && a.name.includes(result.accountNumber))
+          );
+          if (matchedAcc) {
+            setTargetAccountId(matchedAcc.id);
+          }
         }
 
         const rows: PendingFileTx[] = result.transactions.map(t => ({
-          id: t.id,
+          id: t.id || `pending_${Date.now()}_${Math.random()}`,
           description: t.description,
           type: t.type,
           amount: t.amount,
-          suggestedCategory: t.suggestedCategory,
+          suggestedCategory: t.suggestedCategory || 'Outros',
           suggestedSubcategory: t.suggestedSubcategory || '',
-          paymentMethod: t.paymentMethod,
+          paymentMethod: t.paymentMethod || 'PIX',
           date: t.date,
-          confidence: t.confidence,
+          confidence: t.confidence || 90,
         }));
 
         seedPending(rows, 'PDF');
       } catch (err: any) {
         setParseError(`Erro ao processar o PDF: ${err?.message || 'Arquivo corrompido ou formato ilegível'}`);
+      } finally {
+        setIsAiParsing(false);
+        setAiParsingMessage(null);
       }
       return;
     }
@@ -822,6 +988,7 @@ export default function BankIntegration({
   const buildSystemTx = (tx: ConciliationRow): Transaction => {
     const cat = categories.find(c => c.name === tx.suggestedCategory);
     const sub = subcategories.find(s => s.name === tx.suggestedSubcategory && s.categoryId === cat?.id);
+    const target = resolveAppTarget(tx);
 
     const base: any = {
       type: tx.type,
@@ -829,13 +996,17 @@ export default function BankIntegration({
       category: cat?.name || tx.suggestedCategory,
       subcategoryId: sub?.id || undefined,
       subcategory: sub?.name || tx.suggestedSubcategory || '',
-      tagIds: [],
+      tagIds: tx.suggestedTagIds || [],
       amount: tx.amount,
       date: tx.date,
       recurring: 'none',
       notes: tx.description,
       memberId: 'mem_geral',
-      accountId: targetAccountId,
+      accountId: target.accountId,
+      creditCardId: target.creditCardId,
+      invoiceId: target.invoiceId,
+      includeInBalanceSum: target.includeInBalanceSum,
+      paymentMethod: tx.paymentMethod,
       attachmentUrls: [],
       attachmentNames: [],
       status: 'REALIZADO'
@@ -856,19 +1027,49 @@ export default function BankIntegration({
     if (countAsArchived) setArchivedCount(prev => prev + 1);
   };
 
-  // Aprova (fila de aprovação) — para linhas PLUGGY envia ao servidor antes
+  // Aprova (finaliza e importa a transação)
   const handleAcceptAI = async (rowId: string) => {
     const row = pendingTxs.find(t => t.id === rowId);
     if (!row) return;
-    if (row.source === 'PLUGGY' && row.pluggyPendingId) {
-      await handleFinalize(row);
-      return;
-    }
-    setPendingTxs(prev => prev.map(t => t.id === rowId ? { ...t, accepted: true } : t));
+    await handleFinalize(row);
+  };
+
+  const buildTransferCounterpartTx = (row: ConciliationRow, sourceAccountId: string, destAccountId: string): Transaction | null => {
+    if (!destAccountId || destAccountId === sourceAccountId) return null;
+    const sourceAcc = accounts.find(a => a.id === sourceAccountId);
+    const destAcc = accounts.find(a => a.id === destAccountId);
+    const counterType = row.type === 'expense' ? 'income' : 'expense';
+    const transfCat = categories.find(c => (c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia')) && c.type === counterType)
+      || categories.find(c => c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'));
+    const transfSub = subcategories.find(s => s.categoryId === transfCat?.id && s.name.toLowerCase().includes('entre contas'))
+      || subcategories.find(s => s.categoryId === transfCat?.id);
+
+    return {
+      id: `tx_transf_pair_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      type: counterType,
+      categoryId: transfCat?.id || '',
+      category: transfCat?.name || 'Transferências',
+      subcategoryId: transfSub?.id,
+      subcategory: transfSub?.name || 'Transferência entre Contas',
+      tagIds: row.suggestedTagIds || [],
+      amount: row.amount,
+      date: row.date,
+      recurring: 'none',
+      notes: row.type === 'expense'
+        ? `Transferência recebida de ${sourceAcc?.name || 'Conta Origem'} (${row.description})`
+        : `Transferência enviada para ${destAcc?.name || 'Conta Destino'} (${row.description})`,
+      memberId: 'mem_geral',
+      accountId: destAccountId,
+      paymentMethod: row.paymentMethod || 'PIX',
+      attachmentUrls: [],
+      attachmentNames: [],
+      status: 'REALIZADO'
+    };
   };
 
   const handleFinalize = async (row: ConciliationRow) => {
     try {
+      let mainTx: Transaction;
       if (row.source === 'PLUGGY' && row.pluggyPendingId) {
         await api(`/api/pluggy/pending/${encodeURIComponent(row.pluggyPendingId)}/approve`, {
           method: 'POST',
@@ -884,7 +1085,7 @@ export default function BankIntegration({
             },
           }),
         });
-        const tx = buildApprovedTransaction(
+        mainTx = buildApprovedTransaction(
           {
             rawDescription: row.description,
             amount: row.amount,
@@ -903,10 +1104,78 @@ export default function BankIntegration({
           { categories, subcategories, tags, accounts, automationRules },
           resolveAppTarget(row)
         );
-        onImportTransactions([tx]);
       } else {
-        onImportTransactions([buildSystemTx(row)]);
+        mainTx = buildSystemTx(row);
       }
+
+      const curInst = row.currentInstallment;
+      const totInst = row.installmentsCount;
+
+      const toImport: Transaction[] = [];
+
+      if (curInst && totInst && totInst > 1 && curInst >= 1 && curInst <= totInst) {
+        for (let idx = curInst; idx <= totInst; idx++) {
+          const shiftMonth = idx - curInst;
+          const targetDate = shiftDateByMonths(row.date, shiftMonth);
+          const instNotes = formatDescriptionWithInstallment(row.description, idx, totInst);
+          const rowOverride = {
+            ...row,
+            date: targetDate,
+            description: instNotes,
+          };
+
+          let instTx: Transaction;
+          if (row.source === 'PLUGGY' && row.pluggyPendingId) {
+            instTx = buildApprovedTransaction(
+              {
+                rawDescription: instNotes,
+                amount: row.amount,
+                date: targetDate,
+                type: row.type,
+                suggestedCategoryId: row.suggestedCategoryId,
+                suggestedCategory: row.suggestedCategory,
+                suggestedSubcategoryId: row.suggestedSubcategoryId,
+                suggestedSubcategory: row.suggestedSubcategory,
+                suggestedTagIds: row.suggestedTagIds,
+                aiConfidence: row.confidence,
+                pluggyTransactionId: idx === curInst ? row.pluggyTransactionId : undefined,
+                pluggyItemId: undefined,
+                paymentMethod: row.paymentMethod,
+              },
+              { categories, subcategories, tags, accounts, automationRules },
+              resolveAppTarget(rowOverride)
+            );
+          } else {
+            instTx = buildSystemTx(rowOverride);
+          }
+          instTx.id = `tx_inst_${row.id}_${idx}_${Math.random().toString(36).substring(2, 7)}`;
+          instTx.installmentNumber = idx;
+          instTx.totalInstallments = totInst;
+          instTx.notes = instNotes;
+          toImport.push(instTx);
+        }
+      } else {
+        toImport.push(mainTx);
+      }
+
+      const finalImportList: Transaction[] = [];
+      for (const tx of toImport) {
+        finalImportList.push(tx);
+        if (
+          (row.suggestedCategory?.toLowerCase().includes('transferência') || row.suggestedCategory?.toLowerCase().includes('transferencia')) &&
+          row.destinationAppAccountId
+        ) {
+          const rowForPair: ConciliationRow = {
+            ...row,
+            date: tx.date,
+            description: tx.notes,
+          };
+          const counterTx = buildTransferCounterpartTx(rowForPair, tx.accountId, row.destinationAppAccountId);
+          if (counterTx) finalImportList.push(counterTx);
+        }
+      }
+
+      onImportTransactions(finalImportList);
       removeRow(row.id);
       setReconciledCount(prev => prev + 1);
       setActiveSubTab('concil');
@@ -924,12 +1193,6 @@ export default function BankIntegration({
       }
       return t;
     }));
-  };
-
-  const handleEditAndApprove = (rowId: string) => {
-    const row = pendingTxs.find(t => t.id === rowId);
-    if (!row) return;
-    handleFinalize(row);
   };
 
   // Concilia com uma transação manual existente (evita duplicata)
@@ -977,13 +1240,14 @@ export default function BankIntegration({
     const rows = [...pendingTxs];
     const toImport: Transaction[] = [];
     for (const row of rows) {
+      let mainTx: Transaction;
       if (row.source === 'PLUGGY' && row.pluggyPendingId) {
         try {
           await api(`/api/pluggy/pending/${encodeURIComponent(row.pluggyPendingId)}/approve`, {
             method: 'POST',
             body: JSON.stringify({ overrides: { category: row.suggestedCategory, categoryId: row.suggestedCategoryId, date: row.date, amount: row.amount } }),
           });
-          toImport.push(buildApprovedTransaction(
+          mainTx = buildApprovedTransaction(
             {
               rawDescription: row.description,
               amount: row.amount,
@@ -1001,13 +1265,78 @@ export default function BankIntegration({
             },
             { categories, subcategories, tags, accounts, automationRules },
             resolveAppTarget(row)
-          ));
+          );
         } catch (e: any) {
           setPluggyNotice(`Falha ao aprovar "${row.description}": ${e.message}`);
           return;
         }
       } else {
-        toImport.push(buildSystemTx(row));
+        mainTx = buildSystemTx(row);
+      }
+
+      const curInst = row.currentInstallment;
+      const totInst = row.installmentsCount;
+      const rowTxs: Transaction[] = [];
+
+      if (curInst && totInst && totInst > 1 && curInst >= 1 && curInst <= totInst) {
+        for (let idx = curInst; idx <= totInst; idx++) {
+          const shiftMonth = idx - curInst;
+          const targetDate = shiftDateByMonths(row.date, shiftMonth);
+          const instNotes = formatDescriptionWithInstallment(row.description, idx, totInst);
+          const rowOverride = {
+            ...row,
+            date: targetDate,
+            description: instNotes,
+          };
+
+          let instTx: Transaction;
+          if (row.source === 'PLUGGY' && row.pluggyPendingId) {
+            instTx = buildApprovedTransaction(
+              {
+                rawDescription: instNotes,
+                amount: row.amount,
+                date: targetDate,
+                type: row.type,
+                suggestedCategoryId: row.suggestedCategoryId,
+                suggestedCategory: row.suggestedCategory,
+                suggestedSubcategoryId: row.suggestedSubcategoryId,
+                suggestedSubcategory: row.suggestedSubcategory,
+                suggestedTagIds: row.suggestedTagIds,
+                aiConfidence: row.confidence,
+                pluggyTransactionId: idx === curInst ? row.pluggyTransactionId : undefined,
+                pluggyItemId: undefined,
+                paymentMethod: row.paymentMethod,
+              },
+              { categories, subcategories, tags, accounts, automationRules },
+              resolveAppTarget(rowOverride)
+            );
+          } else {
+            instTx = buildSystemTx(rowOverride);
+          }
+          instTx.id = `tx_inst_${row.id}_${idx}_${Math.random().toString(36).substring(2, 7)}`;
+          instTx.installmentNumber = idx;
+          instTx.totalInstallments = totInst;
+          instTx.notes = instNotes;
+          rowTxs.push(instTx);
+        }
+      } else {
+        rowTxs.push(mainTx);
+      }
+
+      for (const tx of rowTxs) {
+        toImport.push(tx);
+        if (
+          (row.suggestedCategory?.toLowerCase().includes('transferência') || row.suggestedCategory?.toLowerCase().includes('transferencia')) &&
+          row.destinationAppAccountId
+        ) {
+          const rowForPair: ConciliationRow = {
+            ...row,
+            date: tx.date,
+            description: tx.notes,
+          };
+          const counterTx = buildTransferCounterpartTx(rowForPair, tx.accountId, row.destinationAppAccountId);
+          if (counterTx) toImport.push(counterTx);
+        }
       }
     }
     try {
@@ -1116,6 +1445,14 @@ export default function BankIntegration({
     .filter(inv => (inv.amount ?? 0) > 0 && !importedInvestmentIds.has(inv.id))
     .map(inv => inv.id);
   const availableInvCount = availableInvIds.length;
+
+  // Cálculos de totais selecionados na Caixa de Entrada / Importação
+  const selectedPendingTxs = pendingTxs.filter(t => selectedIds.includes(t.id));
+  const hasSelectedIncomes = selectedPendingTxs.some(t => t.type === 'income');
+  const hasSelectedExpenses = selectedPendingTxs.some(t => t.type === 'expense');
+  const selectedIncomesTotal = selectedPendingTxs.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+  const selectedExpensesTotal = selectedPendingTxs.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+  const selectedNetTotal = selectedIncomesTotal - selectedExpensesTotal;
 
   return (
     <div className="space-y-6" id="bank-integration-container">
@@ -1743,6 +2080,29 @@ export default function BankIntegration({
             </div>
           </div>
 
+          <div className="w-full max-w-lg bg-white border border-slate-200/80 p-3 rounded-xl flex items-center justify-between gap-3 text-xs shadow-2xs">
+            <div className="flex items-center gap-2 text-slate-700 font-bold">
+              <Building2 size={16} className="text-indigo-600 shrink-0" />
+              <span>Importar lançamentos para a Conta:</span>
+            </div>
+            <select
+              value={targetAccountId}
+              onChange={(e) => handleApplyTargetAccountToAll(e.target.value)}
+              className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-xs font-bold rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 cursor-pointer"
+            >
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+              {creditCards.length > 0 && (
+                <optgroup label="Cartões de crédito">
+                  {creditCards.map(c => (
+                    <option key={c.id} value={c.id}>{c.name} (cartão)</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </div>
+
           <div
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
@@ -1757,9 +2117,16 @@ export default function BankIntegration({
             
             <div className="text-xs font-semibold text-slate-600 text-center">
               {uploadedFileName ? (
-                <span className="text-indigo-600 font-bold block flex items-center justify-center gap-1.5">
-                  <FileText size={16} /> {uploadedFileName} (Carregando...)
-                </span>
+                <div className="space-y-1.5">
+                  <span className="text-indigo-600 font-bold block flex items-center justify-center gap-1.5">
+                    <FileText size={16} /> {uploadedFileName} {isAiParsing ? '(Análise Inteligente...)' : '(Carregando...)'}
+                  </span>
+                  {aiParsingMessage && (
+                    <span className="text-[11px] text-amber-600 font-medium block animate-pulse">
+                      ✨ {aiParsingMessage}
+                    </span>
+                  )}
+                </div>
               ) : (
                 <span>Arraste seu extrato <strong>PDF, OFX ou CSV</strong> aqui ou <label className="text-indigo-600 underline font-bold cursor-pointer">procure no computador<input type="file" accept=".pdf,.ofx,.csv,.txt" onChange={handleFileSelect} className="hidden" /></label></span>
               )}
@@ -1823,7 +2190,7 @@ export default function BankIntegration({
                         color: 'blue-600',
                       };
                       await onAddAccount(newAcc);
-                      setTargetAccountId(newAcc.id);
+                      handleApplyTargetAccountToAll(newAcc.id);
                     }}
                     className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
                   >
@@ -1834,13 +2201,13 @@ export default function BankIntegration({
             </div>
           )}
 
-          <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-xs">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-xs gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               {pendingTxs.length > 0 && (
                 <label className="flex items-center gap-1.5 mr-1 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={selectedIds.length === pendingTxs.length}
+                    checked={selectedIds.length === pendingTxs.length && pendingTxs.length > 0}
                     onChange={(e) => setSelectedIds(e.target.checked ? pendingTxs.map(t => t.id) : [])}
                     className="accent-indigo-600 w-3.5 h-3.5 cursor-pointer"
                     title="Selecionar todas"
@@ -1851,7 +2218,7 @@ export default function BankIntegration({
               <span className="font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded">
                 {pendingTxs.length} pendências
               </span>
-              <span className="text-slate-400 font-semibold">| Conciliados nesta sessão: {reconciledCount}</span>
+              <span className="text-slate-400 font-semibold">| Conciliados: {reconciledCount}</span>
               {archivedCount > 0 && (
                 <span className="text-slate-400 font-semibold">| Arquivados: {archivedCount}</span>
               )}
@@ -1860,12 +2227,35 @@ export default function BankIntegration({
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                  <Building2 size={12} className="text-indigo-600" /> Vincular Conta Padrão:
+                </span>
+                <select
+                  value={targetAccountId}
+                  onChange={(e) => handleApplyTargetAccountToAll(e.target.value)}
+                  className="bg-transparent font-bold text-xs text-slate-800 focus:outline-none cursor-pointer"
+                  title="Conta bancária do app para vincular as operações"
+                >
+                  {accounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                  {creditCards.length > 0 && (
+                    <optgroup label="Cartões de crédito">
+                      {creditCards.map(c => (
+                        <option key={c.id} value={c.id}>{c.name} (cartão)</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+
               {pendingTxs.length > 0 && (
                 <button
                   type="button"
                   onClick={handleConciliateAll}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold transition-all cursor-pointer"
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold transition-all cursor-pointer shadow-xs"
                 >
                   Aprovar & Conciliar Todas ({pendingTxs.length})
                 </button>
@@ -1878,6 +2268,53 @@ export default function BankIntegration({
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-700">
                 {selectedIds.length} selecionadas
               </span>
+
+              <span className="text-[10.5px] font-bold text-slate-700 bg-white border border-indigo-100 px-2.5 py-1 rounded-lg">
+                Valor Total: {hasSelectedIncomes && hasSelectedExpenses ? (
+                  <>
+                    <span className="text-emerald-600 font-extrabold">+{selectedIncomesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}</span>
+                    {' '}/{' '}
+                    <span className="text-rose-600 font-extrabold">-{selectedExpensesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}</span>
+                    {' '}
+                    <span className="text-slate-400 font-normal">| Líq:</span>{' '}
+                    <span className={`${selectedNetTotal >= 0 ? 'text-emerald-600' : 'text-rose-600'} font-extrabold`}>
+                      {selectedNetTotal >= 0 ? '+' : ''}{selectedNetTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}
+                    </span>
+                  </>
+                ) : hasSelectedIncomes ? (
+                  <span className="text-emerald-600 font-extrabold">+{selectedIncomesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}</span>
+                ) : (
+                  <span className="text-rose-600 font-extrabold">-{selectedExpensesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, style: 'currency', currency: 'BRL' })}</span>
+                )}
+              </span>
+
+              <div className="flex items-center gap-1.5 bg-white border border-indigo-200 px-2 py-1 rounded-lg">
+                <span className="text-[9px] font-extrabold uppercase text-indigo-700">Mudar Conta:</span>
+                <select
+                  aria-label="Definir conta para as transações selecionadas"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      handleBatchSetAccount(e.target.value);
+                      e.target.value = '';
+                    }
+                  }}
+                  defaultValue=""
+                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none cursor-pointer"
+                >
+                  <option value="" disabled>Selecionar conta...</option>
+                  {accounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                  {creditCards.length > 0 && (
+                    <optgroup label="Cartões de crédito">
+                      {creditCards.map(c => (
+                        <option key={c.id} value={c.id}>{c.name} (cartão)</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+
               <button
                 type="button"
                 onClick={handleBatchApprove}
@@ -1982,12 +2419,10 @@ export default function BankIntegration({
                           <span className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/60 text-[9px] font-bold text-slate-500 uppercase">
                             {tx.paymentMethod.replace('_', ' ')}
                           </span>
-                          {tx.source === 'PLUGGY' && tx.accountId && (
-                            <span className="px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 flex items-center gap-1">
-                              <Building2 size={8} />
-                              {accounts.find(a => a.id === resolveAppTarget(tx).accountId)?.name || creditCards.find(c => c.id === resolveAppTarget(tx).creditCardId)?.name || (accountMappings[tx.accountId] ? 'Conta mapeada' : 'Conta de Destino')}
-                            </span>
-                          )}
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 flex items-center gap-1">
+                            <Building2 size={8} />
+                            {accounts.find(a => a.id === resolveAppTarget(tx).accountId)?.name || creditCards.find(c => c.id === resolveAppTarget(tx).creditCardId)?.name || 'Conta Vinculada'}
+                          </span>
                           <span className="text-slate-400 text-[10px] font-semibold">{new Date(tx.date + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                           <span className="text-slate-400 text-[10px] font-semibold">Valor:</span>
                           <span className={`text-xs font-bold ${tx.type === 'income' ? 'text-emerald-600' : 'text-slate-900'}`}>
@@ -2019,35 +2454,59 @@ export default function BankIntegration({
                             onChange={(e) => handleEditCategoryChange(tx.id, e.target.value)}
                             className="px-2 py-1 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
                           >
-                            {categories.map(c => (
-                              <option key={c.id} value={c.name}>{c.name}</option>
-                            ))}
+                            {categories
+                              .filter(c => !tx.type || c.type === tx.type || c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'))
+                              .map(c => (
+                                <option key={c.id} value={c.name}>{c.name}</option>
+                              ))}
                           </select>
                           <span className="text-[10px] text-emerald-600 font-bold">{tx.confidence}% conf.</span>
                         </div>
 
-                        {tx.source === 'PLUGGY' && tx.accountId && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[9px] text-indigo-600 font-extrabold uppercase tracking-wider flex items-center gap-1">
-                              <Building2 size={10} /> Conta do app
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] text-indigo-600 font-extrabold uppercase tracking-wider flex items-center gap-1">
+                            <Building2 size={10} /> Conta no app
+                          </span>
+                          <select
+                            value={tx.targetAppAccountId || (tx.source === 'PLUGGY' && tx.accountId ? accountMappings[tx.accountId] || '' : targetAccountId)}
+                            onChange={(e) => handleRowAccountChange(tx.id, e.target.value)}
+                            title="Associe esta operação à conta desejada no app"
+                            className="px-2 py-1 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+                          >
+                            {accounts.map(a => (
+                              <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                            {creditCards.length > 0 && (
+                              <optgroup label="Cartões de crédito">
+                                {creditCards.map(c => (
+                                  <option key={c.id} value={c.id}>{c.name} (cartão)</option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </select>
+                        </div>
+
+                        {(tx.suggestedCategory?.toLowerCase().includes('transferência') || tx.suggestedCategory?.toLowerCase().includes('transferencia')) && (
+                          <div className="flex items-center gap-1.5 pt-1.5 border-t border-slate-200/60">
+                            <span className="text-[9px] text-violet-700 font-extrabold uppercase tracking-wider flex items-center gap-1 shrink-0">
+                              <ArrowLeftRight size={10} />
+                              {tx.type === 'expense' ? 'Conta Destino' : 'Conta Origem'}
                             </span>
                             <select
-                              value={accountMappings[tx.accountId] || ''}
-                              onChange={(e) => handleMapAccount(tx.accountId, e.target.value)}
-                              title="Associe a conta/cartão da Pluggy a uma conta cadastrada no sistema"
-                              className="px-2 py-1 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+                              value={tx.destinationAppAccountId || ''}
+                              onChange={(e) => handleRowDestinationAccountChange(tx.id, e.target.value)}
+                              title="Selecione a conta par da transferência"
+                              className="px-2 py-1 bg-violet-50 border border-violet-200 text-xs font-bold text-violet-800 rounded-lg focus:outline-none"
                             >
-                              <option value="">Usar Conta de Destino</option>
-                              {accounts.map(a => (
-                                <option key={a.id} value={a.id}>{a.name}</option>
-                              ))}
-                              {creditCards.length > 0 && (
-                                <optgroup label="Cartões de crédito">
-                                  {creditCards.map(c => (
-                                    <option key={c.id} value={c.id}>{c.name} (cartão)</option>
-                                  ))}
-                                </optgroup>
-                              )}
+                              <option value="">Selecione a conta par...</option>
+                              {accounts.map(a => {
+                                const mainAccId = tx.targetAppAccountId || (tx.source === 'PLUGGY' && tx.accountId ? accountMappings[tx.accountId] || '' : targetAccountId);
+                                return (
+                                  <option key={a.id} value={a.id} disabled={a.id === mainAccId}>
+                                    {a.name} {a.id === mainAccId ? '(Conta atual)' : ''}
+                                  </option>
+                                );
+                              })}
                             </select>
                           </div>
                         )}
@@ -2070,11 +2529,11 @@ export default function BankIntegration({
 
                         <button
                           type="button"
-                          onClick={() => handleEditAndApprove(tx.id)}
-                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1"
-                          title="Aplica a categoria editada e concilia de uma vez"
+                          onClick={() => openEdit(tx)}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold rounded-lg border border-slate-200 transition-all cursor-pointer flex items-center gap-1"
+                          title="Editar dados desta transação antes de aprovar"
                         >
-                          <Check size={11} /> Editar & Aprovar
+                          <PenLine size={11} /> Editar
                         </button>
 
                         <button
@@ -2120,6 +2579,9 @@ export default function BankIntegration({
                 categories={categories}
                 subcategories={subcategories}
                 tags={tags}
+                accounts={accounts}
+                creditCards={creditCards}
+                defaultAccountId={targetAccountId}
                 onSave={handleEditSave}
                 onCancel={() => { setEditRow(null); setEditBatch(false); }}
               />
@@ -2348,19 +2810,41 @@ interface RowEditPanelProps {
   categories: Category[];
   subcategories: Subcategory[];
   tags: Tag[];
+  accounts: Account[];
+  creditCards?: CreditCard[];
+  defaultAccountId: string;
   onSave: (changes: Partial<ConciliationRow>) => void;
   onCancel: () => void;
 }
 
 const PAYMENT_METHODS = ['PIX', 'CARTAO_CREDITO', 'DEBITO', 'TED_DOC', 'BOLETO', ''];
 
-function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags, onSave, onCancel }: RowEditPanelProps) {
+function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags, accounts, creditCards = [], defaultAccountId, onSave, onCancel }: RowEditPanelProps) {
+  const [type, setType] = useState<'income' | 'expense'>(row.type);
   const [category, setCategory] = useState(row.suggestedCategory);
   const [subcategory, setSubcategory] = useState(row.suggestedSubcategory);
   const [tagIds, setTagIds] = useState<string[]>(row.suggestedTagIds || []);
+  const [targetAppAccountId, setTargetAppAccountId] = useState(row.targetAppAccountId || defaultAccountId);
+  const [destinationAppAccountId, setDestinationAppAccountId] = useState(row.destinationAppAccountId || '');
   const [amount, setAmount] = useState(row.amount);
   const [date, setDate] = useState(row.date);
   const [paymentMethod, setPaymentMethod] = useState(row.paymentMethod);
+  const [description, setDescription] = useState(row.description);
+
+  const [isInstallments, setIsInstallments] = useState<boolean>(
+    (row.installmentsCount !== undefined && row.installmentsCount > 1) || false
+  );
+  const [currentInstallment, setCurrentInstallment] = useState<number>(row.currentInstallment || 1);
+  const [installmentsCount, setInstallmentsCount] = useState<number>(row.installmentsCount || 2);
+
+  const getAutoInvoiceId = (cardId: string, txDate: string) => {
+    const card = creditCards.find(c => c.id === cardId);
+    if (!card) return '';
+    const { year, month } = assignInvoicePeriod(card, txDate);
+    return invoiceIdFor(card.id, year, month);
+  };
+
+  const [customInvoiceId, setCustomInvoiceId] = useState(row.customInvoiceId || (row.targetAppAccountId ? getAutoInvoiceId(row.targetAppAccountId, row.date) : ''));
 
   const cat = categories.find(c => c.name === category);
   const subs = subcategories.filter(s => s.categoryId === cat?.id);
@@ -2375,9 +2859,55 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
     setSubcategory(subcategories.find(s => s.categoryId === c?.id)?.name || '');
   };
 
+  const handleTypeChange = (newType: 'income' | 'expense') => {
+    setType(newType);
+    // Find matching categories for the new type, or a transfer category
+    const matchingCats = categories.filter(c => c.type === newType || c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'));
+    if (matchingCats.length > 0) {
+      handleCategoryChange(matchingCats[0].name);
+    }
+  };
+
+  const handleTargetAppAccountIdChange = (newId: string) => {
+    setTargetAppAccountId(newId);
+    const card = creditCards.find(c => c.id === newId);
+    if (card) {
+      setCustomInvoiceId(getAutoInvoiceId(card.id, date));
+    } else {
+      setCustomInvoiceId('');
+    }
+  };
+
+  const handleDateChange = (newDate: string) => {
+    setDate(newDate);
+    const card = creditCards.find(c => c.id === targetAppAccountId);
+    if (card) {
+      setCustomInvoiceId(getAutoInvoiceId(card.id, newDate));
+    }
+  };
+
   const save = () => {
     const c = categories.find(x => x.name === category);
+
+    let finalDescription = batch ? undefined : description;
+    if (!batch && isInstallments) {
+      finalDescription = formatDescriptionWithInstallment(description, currentInstallment, installmentsCount);
+    } else if (!batch && !isInstallments) {
+      // Remove any installment pattern if unchecked
+      const regexes = [
+        /\s*\(Parcela\s+\d+\s*[\/de]\s*\d+\)/i,
+        /\s*Parcela\s+\d+\s*[\/de]\s*\d+/i,
+        /\s*\d+\s*\/\s*\d+/i
+      ];
+      for (const regex of regexes) {
+        if (regex.test(finalDescription || '')) {
+          finalDescription = (finalDescription || '').replace(regex, '').trim();
+        }
+      }
+    }
+
     onSave({
+      type,
       suggestedCategory: category,
       suggestedCategoryId: c?.id,
       suggestedSubcategory: subcategory,
@@ -2385,9 +2915,39 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
         ? subcategories.find(s => s.name === subcategory && s.categoryId === c?.id)?.id
         : undefined,
       suggestedTagIds: tagIds,
-      ...(batch ? {} : { amount, date, paymentMethod }),
+      targetAppAccountId,
+      destinationAppAccountId,
+      customInvoiceId: customInvoiceId || undefined,
+      currentInstallment: isInstallments ? currentInstallment : undefined,
+      installmentsCount: isInstallments ? installmentsCount : undefined,
+      ...(batch ? {} : { amount, date, paymentMethod, description: finalDescription }),
     });
   };
+
+  const selectedCard = creditCards.find(c => c.id === targetAppAccountId);
+
+  const invoiceOptions = useMemo(() => {
+    if (!selectedCard) return [];
+    const options: { id: string; label: string }[] = [];
+    const baseDate = date ? new Date(date) : new Date();
+    const baseYear = isNaN(baseDate.getTime()) ? new Date().getFullYear() : baseDate.getFullYear();
+    const baseMonth = isNaN(baseDate.getTime()) ? new Date().getMonth() : baseDate.getMonth();
+
+    for (let i = -6; i <= 6; i++) {
+      const d = new Date(baseYear, baseMonth + i, 1);
+      const y = d.getFullYear();
+      const m = d.getMonth() + 1;
+      const id = invoiceIdFor(selectedCard.id, y, m);
+      const mName = d.toLocaleDateString('pt-BR', { month: 'short' });
+      options.push({
+        id,
+        label: `Fatura de ${mName.charAt(0).toUpperCase() + mName.slice(1)}/${y}`
+      });
+    }
+    return options;
+  }, [selectedCard, date]);
+
+  const isTransfer = category.toLowerCase().includes('transferência') || category.toLowerCase().includes('transferencia');
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm p-4 space-y-4 xl:sticky xl:top-4">
@@ -2401,7 +2961,7 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
             <p className="text-[10px] text-slate-400 font-medium mt-0.5 truncate" title={row.description}>{row.description}</p>
           )}
           {batch && (
-            <p className="text-[10px] text-slate-400 font-medium mt-0.5">Aplica categoria, subcategoria e tags a todas as selecionadas.</p>
+            <p className="text-[10px] text-slate-400 font-medium mt-0.5">Aplica tipo, categoria, subcategoria, tags e conta a todas as selecionadas.</p>
           )}
         </div>
         <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700 cursor-pointer shrink-0">
@@ -2411,17 +2971,109 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
 
       <div className="space-y-3">
         <div>
+          <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Tipo de Transação</label>
+          <div className="flex gap-1 mt-1 p-0.5 bg-slate-50 border border-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => handleTypeChange('expense')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                type === 'expense'
+                  ? 'bg-rose-600 text-white shadow-sm'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              Despesa
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTypeChange('income')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                type === 'income'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              Receita
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Conta / Cartão no app</label>
+          <select
+            value={targetAppAccountId}
+            onChange={(e) => handleTargetAppAccountIdChange(e.target.value)}
+            className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+          >
+            {accounts.map(a => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+            {creditCards.length > 0 && (
+              <optgroup label="Cartões de crédito">
+                {creditCards.map(c => (
+                  <option key={c.id} value={c.id}>{c.name} (cartão)</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+
+        {selectedCard && (
+          <div>
+            <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Fatura do Mês</label>
+            <select
+              value={customInvoiceId}
+              onChange={(e) => setCustomInvoiceId(e.target.value)}
+              className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+            >
+              {invoiceOptions.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-slate-400 font-medium mt-1 leading-tight">
+              Escolha para qual fatura direcionar esta transação de cartão de crédito.
+            </p>
+          </div>
+        )}
+
+        <div>
           <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Categoria</label>
           <select
             value={category}
             onChange={(e) => handleCategoryChange(e.target.value)}
             className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
           >
-            {categories.map(c => (
-              <option key={c.id} value={c.name}>{c.name}</option>
-            ))}
+            {categories
+              .filter(c => batch || !type || c.type === type || c.name.toLowerCase().includes('transferência') || c.name.toLowerCase().includes('transferencia'))
+              .map(c => (
+                <option key={c.id} value={c.name}>{c.name}</option>
+              ))}
           </select>
         </div>
+
+        {isTransfer && (
+          <div className="p-3 bg-violet-50/70 border border-violet-100 rounded-xl space-y-1.5">
+            <label className="text-[9px] font-extrabold uppercase tracking-wider text-violet-800 flex items-center gap-1">
+              <ArrowLeftRight size={11} />
+              {type === 'expense' ? 'Conta Destino (Entrada)' : 'Conta Origem (Saída)'}
+            </label>
+            <select
+              value={destinationAppAccountId}
+              onChange={(e) => setDestinationAppAccountId(e.target.value)}
+              className="w-full px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none focus:border-violet-500"
+            >
+              <option value="">Selecione a conta par...</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id} disabled={a.id === targetAppAccountId}>
+                  {a.name} {a.id === targetAppAccountId ? '(Conta atual)' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] text-violet-600 font-medium leading-tight">
+              Ao aprovar ou salvar, o sistema lançará a movimentação equivalente na conta par.
+            </p>
+          </div>
+        )}
 
         <div>
           <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Subcategoria</label>
@@ -2439,6 +3091,61 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
 
         {!batch && (
           <>
+            <div>
+              <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Descrição</label>
+              <input
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-2">
+              <label className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-900 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isInstallments}
+                  onChange={(e) => setIsInstallments(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <ArrowLeftRight size={12} className="text-indigo-600" />
+                <span>Compra Parcelada</span>
+              </label>
+              
+              {isInstallments && (
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <div>
+                    <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Parcela Atual</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={installmentsCount}
+                      value={currentInstallment}
+                      onChange={(e) => setCurrentInstallment(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      className="w-full mt-1 px-2 py-1 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Total de Parcelas</label>
+                    <input
+                      type="number"
+                      min="2"
+                      value={installmentsCount}
+                      onChange={(e) => {
+                        const val = Math.max(2, parseInt(e.target.value, 10) || 2);
+                        setInstallmentsCount(val);
+                        if (currentInstallment > val) {
+                          setCurrentInstallment(val);
+                        }
+                      }}
+                      className="w-full mt-1 px-2 py-1 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Valor (R$)</label>
@@ -2456,7 +3163,7 @@ function RowEditPanel({ row, batch, batchCount, categories, subcategories, tags,
                 <input
                   type="date"
                   value={date}
-                  onChange={(e) => setDate(e.target.value)}
+                  onChange={(e) => handleDateChange(e.target.value)}
                   className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded-lg focus:outline-none"
                 />
               </div>

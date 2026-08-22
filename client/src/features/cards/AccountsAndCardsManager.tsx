@@ -199,10 +199,10 @@ export default function AccountsAndCardsManager({
     setIsCardFormOpen(false);
   };
 
+  const [deletingCard, setDeletingCard] = useState<CreditCardType | null>(null);
+
   const handleDeleteCardRequest = (card: CreditCardType) => {
-    if (onDeleteCreditCard && window.confirm(`Tem certeza de que deseja excluir o cartão "${card.name}"?`)) {
-      onDeleteCreditCard(card.id);
-    }
+    setDeletingCard(card);
   };
 
   const handleDeleteRequest = (acc: Account) => {
@@ -214,9 +214,8 @@ export default function AccountsAndCardsManager({
       const alternative = accounts.find(a => a.id !== acc.id);
       setRemapAccId(alternative ? alternative.id : '');
     } else {
-      if (window.confirm(`Tem certeza de que deseja excluir a conta "${acc.name}"?`)) {
-        onDeleteAccount(acc.id);
-      }
+      setDeletingAcc(acc);
+      setRemapAccId('');
     }
   };
 
@@ -871,69 +870,109 @@ export default function AccountsAndCardsManager({
         </div>
       )}
 
-      {/* Remap Modal when deleting an active account with transactions */}
-      {deletingAcc && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden border border-slate-100">
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-rose-50/10">
-              <h3 className="text-xs font-bold text-rose-600 uppercase tracking-wider flex items-center gap-1.5">
-                <AlertTriangle size={14} /> Reatribuir Transações Ativas
-              </h3>
-              <button 
-                onClick={() => setDeletingAcc(null)}
-                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <div className="space-y-2 text-xs text-slate-500 font-medium leading-relaxed">
-                <p>
-                  A conta <b>"{deletingAcc.name}"</b> possui transações vinculadas no sistema.
-                </p>
-                <p>
-                  Para excluí-la com segurança, você precisa escolher outra conta ativa para onde as transações existentes serão migradas.
-                </p>
-              </div>
-
-              {/* Remap Destination select */}
-              <div className="space-y-1">
-                <label className="block text-[10px] text-slate-400 font-bold uppercase">Conta de Destino</label>
-                <select
-                  required
-                  value={remapAccId}
-                  onChange={(e) => setRemapAccId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-500 font-bold"
-                >
-                  <option value="">-- Selecione uma conta destino --</option>
-                  {accounts
-                    .filter(a => a.id !== deletingAcc.id)
-                    .map(a => (
-                      <option key={a.id} value={a.id}>{a.name} (R$ {a.balance.toLocaleString('pt-BR')})</option>
-                    ))
-                  }
-                </select>
-              </div>
-
-              {/* Form buttons */}
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button
-                  type="button"
+      {/* Remap / Delete Modal when deleting an account */}
+      {deletingAcc && (() => {
+        const count = transactions.filter(t => t.accountId === deletingAcc.id).length;
+        return (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden border border-slate-100">
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-rose-50/10">
+                <h3 className="text-xs font-bold text-rose-600 uppercase tracking-wider flex items-center gap-1.5">
+                  <AlertTriangle size={14} /> {count > 0 ? 'Reatribuir Transações Ativas' : 'Excluir Conta'}
+                </h3>
+                <button 
                   onClick={() => setDeletingAcc(null)}
-                  className="px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  disabled={!remapAccId}
-                  onClick={handleConfirmDeleteWithRemap}
-                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Reatribuir e Excluir
+                  <X size={16} />
                 </button>
               </div>
+
+              <div className="p-6 space-y-4">
+                {count > 0 ? (
+                  <>
+                    <div className="space-y-2 text-xs text-slate-500 font-medium leading-relaxed">
+                      <p>
+                        A conta <b>&quot;{deletingAcc.name}&quot;</b> possui transações vinculadas no sistema.
+                      </p>
+                      <p>
+                        Para excluí-la com segurança, você precisa escolher outra conta ativa para onde as transações existentes serão migradas.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[10px] text-slate-400 font-bold uppercase">Conta de Destino</label>
+                      <select
+                        required
+                        value={remapAccId}
+                        onChange={(e) => setRemapAccId(e.target.value)}
+                        className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-500 font-bold"
+                      >
+                        <option value="">-- Selecione uma conta destino --</option>
+                        {accounts
+                          .filter(a => a.id !== deletingAcc.id)
+                          .map(a => (
+                            <option key={a.id} value={a.id}>{a.name} (R$ {a.balance.toLocaleString('pt-BR')})</option>
+                          ))
+                        }
+                      </select>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-600">
+                    Tem certeza de que deseja excluir a conta <b>&quot;{deletingAcc.name}&quot;</b>?
+                  </p>
+                )}
+
+                <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeletingAcc(null)}
+                    className="px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={count > 0 && !remapAccId}
+                    onClick={handleConfirmDeleteWithRemap}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {count > 0 ? 'Reatribuir e Excluir' : 'Excluir'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Delete Credit Card Modal */}
+      {deletingCard && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-xl border border-slate-100">
+            <h3 className="text-base font-bold text-slate-800">Excluir Cartão de Crédito</h3>
+            <p className="text-xs text-slate-500">
+              Tem certeza de que deseja excluir o cartão &quot;{deletingCard.name}&quot;?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingCard(null)}
+                className="px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteCreditCard) onDeleteCreditCard(deletingCard.id);
+                  setDeletingCard(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
+              >
+                Excluir
+              </button>
             </div>
           </div>
         </div>

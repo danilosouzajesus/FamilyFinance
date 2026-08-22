@@ -33,7 +33,8 @@ const KEYWORD_RULES: KeywordRule[] = [
   { keywords: ['cinema', 'show', 'teatro', 'game', 'jogos', 'parque', 'passeio', 'viagem', 'hotel', 'airbnb', 'cultura'], category: 'Lazer & Cultura', confidence: 85 },
   { keywords: ['roupa', 'calçado', 'calçados', 'sapato', 'loja', 'renner', 'c&a', 'cea', 'hering', 'zara', 'magazine', 'casas bahia', 'vestuario', 'vestuário'], category: 'Vestuário', confidence: 85 },
   { keywords: ['salario', 'salário', 'holerite', 'pagamento', 'remuneração', 'admissao', 'admissão', 'ferias', 'férias', 'decimo', 'décimo', 'bonus', 'bônus'], category: 'Salário & Benefícios', confidence: 92 },
-  { keywords: ['pix recebido', 'pix recebida', 'transferencia recebida', 'transferência recebida', 'ted recebida', 'doc recebida', 'reembolso', 'dividendo', 'juros', 'investimento', 'resgate'], category: 'Outras Receitas', confidence: 75 },
+  { keywords: ['transferencia', 'transferência', 'entre contas', 'transf entre contas', 'transf enviada', 'transf recebida', 'pix enviado', 'pix recebido', 'ted enviada', 'ted recebida'], category: 'Transferências', confidence: 88 },
+  { keywords: ['reembolso', 'dividendo', 'juros', 'investimento', 'resgate'], category: 'Outras Receitas', confidence: 75 },
 ];
 
 const FALLBACK_EXPENSE = 'Outras Despesas';
@@ -150,7 +151,7 @@ export function applySuggestionLive(
 export function buildApprovedTransaction(
   pending: Pick<PluggyPendingTx, 'rawDescription' | 'amount' | 'date' | 'type' | 'suggestedCategoryId' | 'suggestedCategory' | 'suggestedSubcategoryId' | 'suggestedSubcategory' | 'suggestedTagIds' | 'aiConfidence' | 'pluggyTransactionId' | 'pluggyItemId' | 'paymentMethod'>,
   ctx: PluggyEngineContext,
-  overrides?: Partial<Pick<Transaction, 'categoryId' | 'category' | 'subcategoryId' | 'subcategory' | 'tagIds' | 'amount' | 'date' | 'notes' | 'accountId' | 'memberId' | 'creditCardId' | 'includeInBalanceSum'>>
+  overrides?: Partial<Pick<Transaction, 'categoryId' | 'category' | 'subcategoryId' | 'subcategory' | 'tagIds' | 'amount' | 'date' | 'notes' | 'accountId' | 'memberId' | 'creditCardId' | 'invoiceId' | 'includeInBalanceSum'>>
 ): Transaction {
   const categoryName = overrides?.category || pending.suggestedCategory;
   const cat = ctx.categories.find(c => c.name.toLowerCase() === categoryName.toLowerCase());
@@ -170,6 +171,7 @@ export function buildApprovedTransaction(
     memberId: overrides?.memberId || 'mem_geral',
     accountId: overrides?.accountId || ctx.accounts?.[0]?.id || 'acc_itau',
     creditCardId: overrides?.creditCardId,
+    invoiceId: overrides?.invoiceId,
     includeInBalanceSum: overrides?.includeInBalanceSum,
     attachmentUrls: [],
     attachmentNames: [],

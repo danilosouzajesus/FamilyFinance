@@ -19,7 +19,7 @@ import AuthModal from '@/features/auth/AuthModal';
 import PasswordResetScreen from '@/features/auth/PasswordResetScreen';
 import UserMenu from '@/components/UserMenu';
 import PremiumFeatures from '@/features/premium/PremiumFeatures';
-import { getInitialState, saveState } from '@/lib/state/initialData';
+import { getInitialState, saveState, ensureDefaultCategories } from '@/lib/state/initialData';
 import { FinancialState, Transaction, Budget, MonthlyGoal, Goal, FamilyMember, Account, Subscription, Debt, Investment, AutomationRule, Category, Subcategory, Tag, AuditLog, AppNotification, CreditCard, Invoice } from '@ff/shared';
 import { Download, Upload, RefreshCw, Database, AlertCircle, CheckCircle2, User as UserIcon, LogIn, LogOut, Loader2, AlertTriangle } from 'lucide-react';
 import { User, Session } from '@supabase/supabase-js';
@@ -129,6 +129,14 @@ function applyRemoteState(prev: FinancialState, remote: Partial<FinancialState>)
       changed = true;
     }
   }
+
+  const { categories, subcategories } = ensureDefaultCategories(merged.categories, merged.subcategories);
+  if (categories.length !== merged.categories.length || subcategories.length !== merged.subcategories.length) {
+    merged.categories = categories;
+    merged.subcategories = subcategories;
+    changed = true;
+  }
+
   return changed ? merged : prev;
 }
 
@@ -2038,10 +2046,12 @@ export default function App() {
   const handleImportTransactions = async (importedTxs: any[]) => {
     let syncTxs: Transaction[] = [];
     let syncAccounts: Account[] = [];
+    let affectedInvoices: Invoice[] = [];
 
     setState(prev => {
       let currentTransactions = [...prev.transactions];
       let currentAccounts = [...prev.accounts];
+      let updatedInvoices = prev.invoices || [];
 
       importedTxs.forEach((txData, index) => {
         // Respeita um id já existente (Pluggy) e evita duplicar a mesma transação
@@ -2066,6 +2076,9 @@ export default function App() {
           notes: txData.notes || txData.description || '',
           memberId: txData.memberId || 'mem_geral',
           accountId: txData.accountId || prev.accounts[0]?.id || 'acc_itau',
+          creditCardId: txData.creditCardId || undefined,
+          invoiceId: txData.invoiceId || undefined,
+          includeInBalanceSum: txData.includeInBalanceSum ?? true,
           attachmentUrls: txData.attachmentUrls || [],
           attachmentNames: txData.attachmentNames || [],
           status: txData.status || 'REALIZADO',
@@ -2078,32 +2091,76 @@ export default function App() {
         currentTransactions = [newTx, ...currentTransactions];
         syncTxs.push(newTx);
 
-        currentAccounts = currentAccounts.map(acc => {
-          if (acc.id === newTx.accountId) {
-            const multiplier = newTx.type === 'income' ? 1 : -1;
-            const updatedAcc = {
-              ...acc,
-              balance: acc.balance + (newTx.amount * multiplier)
-            };
-            const existingIdx = syncAccounts.findIndex(a => a.id === acc.id);
-            if (existingIdx !== -1) {
-              syncAccounts[existingIdx] = updatedAcc;
-            } else {
-              syncAccounts.push(updatedAcc);
+        const shouldAdjustBalance = newTx.includeInBalanceSum !== false && newTx.type !== 'invoice_payment';
+
+        if (shouldAdjustBalance && newTx.status !== 'PENDENTE') {
+          currentAccounts = currentAccounts.map(acc => {
+            if (acc.id === newTx.accountId) {
+              const multiplier = newTx.type === 'income' ? 1 : -1;
+              const updatedAcc = {
+                ...acc,
+                balance: acc.balance + (newTx.amount * multiplier)
+              };
+              const existingIdx = syncAccounts.findIndex(a => a.id === acc.id);
+              if (existingIdx !== -1) {
+                syncAccounts[existingIdx] = updatedAcc;
+              } else {
+                syncAccounts.push(updatedAcc);
+              }
+              return updatedAcc;
             }
-            return updatedAcc;
+            return acc;
+          });
+        }
+
+        // Recálculo do total da fatura vinculada (criando a fatura se necessário)
+        if (newTx.invoiceId && newTx.type !== 'invoice_payment') {
+          const existingIdx = updatedInvoices.findIndex(i => i.id === newTx.invoiceId);
+          if (existingIdx === -1 && newTx.creditCardId) {
+            const card = (prev.creditCards || []).find(c => c.id === newTx.creditCardId);
+            if (card) {
+              const { year: iy, month: im } = parseInvoiceId(newTx.invoiceId);
+              if (iy && im) {
+                const inv = ensureInvoice(updatedInvoices, card, iy, im);
+                inv.totalAmount = computeInvoiceTotal(currentTransactions, newTx.invoiceId);
+                updatedInvoices = [...updatedInvoices, inv];
+                
+                const affIdx = affectedInvoices.findIndex(i => i.id === inv.id);
+                if (affIdx !== -1) {
+                  affectedInvoices[affIdx] = inv;
+                } else {
+                  affectedInvoices.push(inv);
+                }
+              }
+            }
+          } else if (existingIdx !== -1) {
+            const updated = {
+              ...updatedInvoices[existingIdx],
+              totalAmount: computeInvoiceTotal(currentTransactions, newTx.invoiceId)
+            };
+            updatedInvoices = updatedInvoices.map(i => i.id === newTx.invoiceId ? updated : i);
+            
+            const affIdx = affectedInvoices.findIndex(i => i.id === updated.id);
+            if (affIdx !== -1) {
+              affectedInvoices[affIdx] = updated;
+            } else {
+              affectedInvoices.push(updated);
+            }
           }
-          return acc;
-        });
+        }
       });
 
       return {
         ...prev,
         transactions: currentTransactions,
-        accounts: currentAccounts
+        accounts: currentAccounts,
+        invoices: updatedInvoices
       };
     });
 
+    for (const inv of affectedInvoices) {
+      await syncInvoice(inv);
+    }
     for (const tx of syncTxs) {
       await syncTransaction(tx);
     }
@@ -2479,6 +2536,7 @@ export default function App() {
             <TransactionsManager 
               transactions={state.transactions}
               categories={state.categories}
+              subcategories={state.subcategories || []}
               accounts={state.accounts}
               familyMembers={state.familyMembers}
               allTags={state.tags || []}

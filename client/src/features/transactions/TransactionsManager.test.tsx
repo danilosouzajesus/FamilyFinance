@@ -403,4 +403,34 @@ describe('TransactionsManager', () => {
     expect(balanceCard?.textContent).toContain('R$ 6.500,00');
     expect(balanceCard?.textContent).toContain('14/08/2026');
   });
+
+  it('exibe modal de confirmação e exclui transação não recorrente', async () => {
+    const onDelete = vi.fn();
+    render(
+      <TransactionsManager
+        {...baseProps}
+        transactions={[
+          makeTx({ id: 'tx-del-1', notes: 'Almoço Restaurante', amount: 50, recurring: 'none' })
+        ]}
+        categories={[makeCategory()]}
+        onDeleteTransaction={onDelete}
+      />
+    );
+
+    // Clica no botão de excluir transação
+    const deleteBtn = document.getElementById('delete-tx-btn-tx-del-1');
+    expect(deleteBtn).toBeTruthy();
+    fireEvent.click(deleteBtn!);
+
+    // O modal de confirmação deve aparecer
+    expect(document.getElementById('delete-tx-modal')).toBeTruthy();
+    expect(screen.getByText('Excluir Transação')).toBeInTheDocument();
+
+    // Clica no botão de confirmar no modal
+    const confirmBtn = document.getElementById('confirm-delete-tx-btn');
+    expect(confirmBtn).toBeTruthy();
+    fireEvent.click(confirmBtn!);
+
+    expect(onDelete).toHaveBeenCalledWith('tx-del-1', 'only_this');
+  });
 });

@@ -76,10 +76,10 @@ export default function StagingInbox({
     onEditTransaction(tx.id, { status: 'REALIZADO' }, 'only_this');
   };
 
+  const [confirmDiscardTx, setConfirmDiscardTx] = useState<Transaction | null>(null);
+
   const handleDiscard = (tx: Transaction) => {
-    if (window.confirm(`Descartar "${tx.notes || tx.category}"? O item será removido da fatura.`)) {
-      onDeleteTransaction(tx.id, 'only_this');
-    }
+    setConfirmDiscardTx(tx);
   };
 
   const monthLabel = (inv?: Invoice) => inv ? `${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][inv.month - 1]}/${inv.year}` : '';
@@ -269,7 +269,7 @@ export default function StagingInbox({
                         id={`staging-category-${tx.id}`}
                       >
                         <option value="">-- Manter atual --</option>
-                        {categories.filter(c => !c.parentId && c.type === 'expense').map(c => (
+                        {categories.filter(c => !c.parentId).map(c => (
                           <option key={c.id} value={c.id}>{c.name}</option>
                         ))}
                       </select>
@@ -287,6 +287,37 @@ export default function StagingInbox({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Discard Confirmation Modal */}
+      {confirmDiscardTx && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Descartar Lançamento</h3>
+            <p className="text-xs text-slate-500">
+              Descartar &quot;{confirmDiscardTx.notes || confirmDiscardTx.category}&quot;? O item será removido da fatura.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDiscardTx(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteTransaction(confirmDiscardTx.id, 'only_this');
+                  setConfirmDiscardTx(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                Descartar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

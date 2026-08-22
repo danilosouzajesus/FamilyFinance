@@ -70,6 +70,8 @@ export default function FamilyBudgets({
   const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState<MonthlyGoal | null>(null);
+  const [confirmDeleteGoalId, setConfirmDeleteGoalId] = useState<string | null>(null);
+  const [confirmDeleteBudgetId, setConfirmDeleteBudgetId] = useState<string | null>(null);
 
   // Budget Form Fields
   const [categoryId, setCategoryId] = useState('');
@@ -433,9 +435,7 @@ export default function FamilyBudgets({
                         <Edit2 size={12} />
                       </button>
                       <button
-                        onClick={() => {
-                          if (window.confirm('Excluir esta meta de gastos mensal?')) onDeleteMonthlyGoal(g.id);
-                        }}
+                        onClick={() => setConfirmDeleteGoalId(g.id)}
                         className="p-1 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-all cursor-pointer"
                       >
                         <Trash2 size={12} />
@@ -541,11 +541,7 @@ export default function FamilyBudgets({
                       <Edit2 size={12} />
                     </button>
                     <button
-                      onClick={() => {
-                        if (window.confirm('Tem certeza de que deseja excluir este orçamento?')) {
-                          onDeleteBudget(b.id);
-                        }
-                      }}
+                      onClick={() => setConfirmDeleteBudgetId(b.id)}
                       className="p-1 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-rose-600 border border-transparent hover:border-slate-100 transition-all cursor-pointer"
                       id={`delete-budget-btn-${b.id}`}
                     >
@@ -845,6 +841,63 @@ export default function FamilyBudgets({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Delete Goal Modal */}
+      {confirmDeleteGoalId && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Excluir Meta de Gastos</h3>
+            <p className="text-xs text-slate-500">Excluir esta meta de gastos mensal?</p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteGoalId(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-600 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteMonthlyGoal(confirmDeleteGoalId);
+                  setConfirmDeleteGoalId(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Budget Modal */}
+      {confirmDeleteBudgetId && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Excluir Orçamento</h3>
+            <p className="text-xs text-slate-500">Tem certeza de que deseja excluir este orçamento?</p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteBudgetId(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-600 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteBudget(confirmDeleteBudgetId);
+                  setConfirmDeleteBudgetId(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Excluir
+              </button>
+            </div>
           </div>
         </div>
       )}

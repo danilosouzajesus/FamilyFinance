@@ -55,11 +55,13 @@ describe('StagingInbox', () => {
     expect(onEdit).toHaveBeenCalledWith('tx1', { status: 'REALIZADO' }, 'only_this');
   });
 
-  it('descartar chama onDeleteTransaction', () => {
+  it('descartar chama onDeleteTransaction após confirmação no modal', () => {
     const onDelete = vi.fn();
-    window.confirm = vi.fn(() => true);
     render(<StagingInbox {...baseProps} onDeleteTransaction={onDelete} />);
     fireEvent.click(screen.getByText('Descartar'));
+    // Clica no botão de confirmação dentro do modal
+    const modalConfirmBtns = screen.getAllByRole('button', { name: 'Descartar' });
+    fireEvent.click(modalConfirmBtns[modalConfirmBtns.length - 1]);
     expect(onDelete).toHaveBeenCalledWith('tx1', 'only_this');
   });
 

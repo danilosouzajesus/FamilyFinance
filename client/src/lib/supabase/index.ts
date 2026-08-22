@@ -67,6 +67,46 @@ export async function testSupabaseConnection(url: string, anonKey: string): Prom
 // SUPABASE SYNC AND OPERATIONS HELPERS
 // ==========================================
 
+export async function executeSupabaseQuery<T = any>(
+  queryFn: (client: SupabaseClient) => any
+): Promise<any> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { error: { message: 'Supabase client not initialized' } };
+
+  let res = await queryFn(supabase);
+
+  const errMessage = res.error?.message || (typeof res.error === 'string' ? res.error : '');
+  const isJwtExpired = res.error && (
+    errMessage.toLowerCase().includes('jwt expired') ||
+    errMessage.toLowerCase().includes('token is expired') ||
+    errMessage.toLowerCase().includes('invalid jwt') ||
+    res.error?.code === 'PGRST301'
+  );
+
+  if (isJwtExpired) {
+    console.warn('[Supabase] JWT expired error encountered. Attempting auth.refreshSession()...');
+    try {
+      const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
+      if (!refreshErr && refreshData?.session) {
+        console.info('[Supabase] Session successfully refreshed. Retrying database operation...');
+        res = await queryFn(supabase);
+      } else {
+        console.warn('[Supabase] Session refresh failed or session missing:', refreshErr?.message || 'No session');
+        await supabase.auth.signOut();
+        res = await queryFn(supabase);
+      }
+    } catch (e) {
+      console.error('[Supabase] Error during refreshSession attempt:', e);
+      try {
+        await supabase.auth.signOut();
+        res = await queryFn(supabase);
+      } catch (_) {}
+    }
+  }
+
+  return res;
+}
+
 export interface SupabaseDiagnosticInfo {
   isConnected: boolean;
   url: string;
@@ -107,7 +147,9 @@ export async function runSupabaseDiagnostics(): Promise<SupabaseDiagnosticInfo> 
   await Promise.all(
     tables.map(async (table) => {
       try {
-        const { count, error } = await supabase.from(table).select('*', { count: 'exact', head: true });
+        const { count, error } = await executeSupabaseQuery(client =>
+          client.from(table).select('*', { count: 'exact', head: true })
+        );
         if (error) {
           info.errors[table] = error.message || String(error);
           info.tableCounts[table] = null;
@@ -129,9 +171,9 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
   if (!supabase) return null;
 
   try {
-    const safeFetch = async (fetchFn: () => any, tableName: string) => {
+    const safeFetch = async (fetchFn: (client: SupabaseClient) => any, tableName: string) => {
       try {
-        const { data, error } = await fetchFn();
+        const { data, error } = await executeSupabaseQuery(fetchFn);
         if (error) {
           console.warn(`[Supabase Error] failed to load table ${tableName}:`, error.message || error);
           return null;
@@ -160,21 +202,21 @@ export async function fetchStateFromSupabase(): Promise<Partial<FinancialState> 
       invoicesData,
       goalContributionsData
     ] = await Promise.all([
-      safeFetch(() => supabase.from('categories').select('*'), 'categories'),
-      safeFetch(() => supabase.from('tags').select('*'), 'tags'),
-      safeFetch(() => supabase.from('family_members').select('*'), 'family_members'),
-      safeFetch(() => supabase.from('accounts').select('*'), 'accounts'),
-      safeFetch(() => supabase.from('transactions').select('*').order('date', { ascending: false }), 'transactions'),
-      safeFetch(() => supabase.from('budgets').select('*'), 'budgets'),
-      safeFetch(() => supabase.from('monthly_goals').select('*'), 'monthly_goals'),
-      safeFetch(() => supabase.from('goals').select('*'), 'goals'),
-      safeFetch(() => supabase.from('subscriptions').select('*'), 'subscriptions'),
-      safeFetch(() => supabase.from('debts').select('*'), 'debts'),
-      safeFetch(() => supabase.from('investments').select('*'), 'investments'),
-      safeFetch(() => supabase.from('automation_rules').select('*'), 'automation_rules'),
-      safeFetch(() => supabase.from('credit_cards').select('*'), 'credit_cards'),
-      safeFetch(() => supabase.from('invoices').select('*'), 'invoices'),
-      safeFetch(() => supabase.from('goal_contributions').select('*'), 'goal_contributions'),
+      safeFetch(client => client.from('categories').select('*'), 'categories'),
+      safeFetch(client => client.from('tags').select('*'), 'tags'),
+      safeFetch(client => client.from('family_members').select('*'), 'family_members'),
+      safeFetch(client => client.from('accounts').select('*'), 'accounts'),
+      safeFetch(client => client.from('transactions').select('*').order('date', { ascending: false }), 'transactions'),
+      safeFetch(client => client.from('budgets').select('*'), 'budgets'),
+      safeFetch(client => client.from('monthly_goals').select('*'), 'monthly_goals'),
+      safeFetch(client => client.from('goals').select('*'), 'goals'),
+      safeFetch(client => client.from('subscriptions').select('*'), 'subscriptions'),
+      safeFetch(client => client.from('debts').select('*'), 'debts'),
+      safeFetch(client => client.from('investments').select('*'), 'investments'),
+      safeFetch(client => client.from('automation_rules').select('*'), 'automation_rules'),
+      safeFetch(client => client.from('credit_cards').select('*'), 'credit_cards'),
+      safeFetch(client => client.from('invoices').select('*'), 'invoices'),
+      safeFetch(client => client.from('goal_contributions').select('*'), 'goal_contributions'),
     ]);
 
     const result: Partial<FinancialState> = {};
@@ -424,16 +466,16 @@ export async function syncTransaction(tx: Transaction, isDelete = false): Promis
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('transactions').delete().eq('id', tx.id);
+      const { error } = await executeSupabaseQuery(client => client.from('transactions').delete().eq('id', tx.id));
       return !error;
     } else {
       // Find category ID matching name
-      const { data: catData } = await supabase.from('categories').select('id').eq('name', tx.category).single();
+      const { data: catData } = await executeSupabaseQuery(client => client.from('categories').select('id').eq('name', tx.category).single());
       const catId = catData?.id || null;
 
       // Find subcategory ID matching name
       const { data: subData } = tx.subcategoryId 
-        ? await supabase.from('categories').select('id').eq('id', tx.subcategoryId).single()
+        ? await executeSupabaseQuery(client => client.from('categories').select('id').eq('id', tx.subcategoryId!).single())
         : { data: null };
       const subId = subData?.id || null;
 
@@ -462,7 +504,7 @@ export async function syncTransaction(tx: Transaction, isDelete = false): Promis
         total_installments: tx.totalInstallments ?? 1,
         include_in_balance_sum: tx.includeInBalanceSum ?? true,
       };
-      const { error } = await supabase.from('transactions').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('transactions').upsert(dbPayload));
       if (error) console.error('Error syncing transaction:', error.message, JSON.stringify(dbPayload));
       return !error;
     }
@@ -478,7 +520,7 @@ export async function syncCategory(cat: Category | Subcategory, isDelete = false
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('categories').delete().eq('id', cat.id);
+      const { error } = await executeSupabaseQuery(client => client.from('categories').delete().eq('id', cat.id));
       return !error;
     } else {
       const dbPayload = {
@@ -490,7 +532,7 @@ export async function syncCategory(cat: Category | Subcategory, isDelete = false
         parent_id: 'parentId' in cat ? (cat.parentId || null) : ('categoryId' in cat ? cat.categoryId : null),
         is_shared: 'isShared' in cat ? (cat.isShared ?? true) : true,
       };
-      const { error } = await supabase.from('categories').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('categories').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -505,7 +547,7 @@ export async function syncAccount(acc: Account, isDelete = false): Promise<boole
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('accounts').delete().eq('id', acc.id);
+      const { error } = await executeSupabaseQuery(client => client.from('accounts').delete().eq('id', acc.id));
       return !error;
     } else {
       const dbPayload = {
@@ -515,7 +557,7 @@ export async function syncAccount(acc: Account, isDelete = false): Promise<boole
         balance: acc.balance,
         color: acc.color,
       };
-      const { error } = await supabase.from('accounts').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('accounts').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -530,7 +572,7 @@ export async function syncCreditCard(card: CreditCard, isDelete = false): Promis
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('credit_cards').delete().eq('id', card.id);
+      const { error } = await executeSupabaseQuery(client => client.from('credit_cards').delete().eq('id', card.id));
       return !error;
     } else {
       const dbPayload = {
@@ -542,7 +584,7 @@ export async function syncCreditCard(card: CreditCard, isDelete = false): Promis
         account_id: card.accountId,
         color: card.color || '#8B5CF6',
       };
-      const { error } = await supabase.from('credit_cards').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('credit_cards').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -557,7 +599,7 @@ export async function syncInvoice(inv: Invoice, isDelete = false): Promise<boole
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('invoices').delete().eq('id', inv.id);
+      const { error } = await executeSupabaseQuery(client => client.from('invoices').delete().eq('id', inv.id));
       return !error;
     } else {
       const dbPayload = {
@@ -571,7 +613,7 @@ export async function syncInvoice(inv: Invoice, isDelete = false): Promise<boole
         status: inv.status,
         paid_at: inv.paidAt || null,
       };
-      const { error } = await supabase.from('invoices').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('invoices').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -586,11 +628,11 @@ export async function syncBudget(bud: Budget, isDelete = false): Promise<boolean
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('budgets').delete().eq('id', bud.id);
+      const { error } = await executeSupabaseQuery(client => client.from('budgets').delete().eq('id', bud.id));
       return !error;
     } else {
       // Find category object matching categoryId/name to insert properly
-      const { data: catData } = await supabase.from('categories').select('id').eq('name', bud.categoryId).single();
+      const { data: catData } = await executeSupabaseQuery(client => client.from('categories').select('id').eq('name', bud.categoryId).single());
       const categoryId = catData?.id || null;
 
       const dbPayload = {
@@ -601,7 +643,7 @@ export async function syncBudget(bud: Budget, isDelete = false): Promise<boolean
         notify_at_percent: bud.notifyAtPercent ?? 80,
         rollover: bud.rollover ?? false,
       };
-      const { error } = await supabase.from('budgets').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('budgets').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -616,7 +658,7 @@ export async function syncGoal(goal: Goal, isDelete = false): Promise<boolean> {
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('goals').delete().eq('id', goal.id);
+      const { error } = await executeSupabaseQuery(client => client.from('goals').delete().eq('id', goal.id));
       return !error;
     } else {
       const dbPayload = {
@@ -630,12 +672,12 @@ export async function syncGoal(goal: Goal, isDelete = false): Promise<boolean> {
         account_id: goal.accountId || null,
         monthly_contribution: goal.monthlyContribution ?? null,
       };
-      const { error } = await supabase.from('goals').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('goals').upsert(dbPayload));
       if (error) return false;
 
       // Persistir ledger de aportes/resgates (delete + reinsert, pois o app envia a lista completa)
       const contributions = goal.contributions || [];
-      const { error: delErr } = await supabase.from('goal_contributions').delete().eq('goal_id', goal.id);
+      const { error: delErr } = await executeSupabaseQuery(client => client.from('goal_contributions').delete().eq('goal_id', goal.id));
       if (delErr) return false;
       if (contributions.length > 0) {
         const rows = contributions.map((c, i) => ({
@@ -646,7 +688,7 @@ export async function syncGoal(goal: Goal, isDelete = false): Promise<boolean> {
           date: c.date,
           type: c.type,
         }));
-        const { error: insErr } = await supabase.from('goal_contributions').insert(rows);
+        const { error: insErr } = await executeSupabaseQuery(client => client.from('goal_contributions').insert(rows));
         return !insErr;
       }
       return true;
@@ -663,7 +705,7 @@ export async function syncMonthlyGoal(goal: MonthlyGoal, isDelete = false): Prom
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('monthly_goals').delete().eq('id', goal.id);
+      const { error } = await executeSupabaseQuery(client => client.from('monthly_goals').delete().eq('id', goal.id));
       return !error;
     } else {
       const dbPayload = {
@@ -674,7 +716,7 @@ export async function syncMonthlyGoal(goal: MonthlyGoal, isDelete = false): Prom
         category_ids: goal.categoryIds || [],
         notify_at_percent: goal.notifyAtPercent ?? 80,
       };
-      const { error } = await supabase.from('monthly_goals').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('monthly_goals').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -689,7 +731,7 @@ export async function syncSubscription(sub: Subscription, isDelete = false): Pro
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('subscriptions').delete().eq('id', sub.id);
+      const { error } = await executeSupabaseQuery(client => client.from('subscriptions').delete().eq('id', sub.id));
       return !error;
     } else {
       const billingDay = sub.billingDate
@@ -709,7 +751,7 @@ export async function syncSubscription(sub: Subscription, isDelete = false): Pro
         notify_days: sub.notifyDays ?? 3,
         account_id: sub.accountId || null,
       };
-      const { error } = await supabase.from('subscriptions').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('subscriptions').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -724,7 +766,7 @@ export async function syncDebt(debt: Debt, isDelete = false): Promise<boolean> {
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('debts').delete().eq('id', debt.id);
+      const { error } = await executeSupabaseQuery(client => client.from('debts').delete().eq('id', debt.id));
       return !error;
     } else {
       const dbPayload = {
@@ -740,7 +782,7 @@ export async function syncDebt(debt: Debt, isDelete = false): Promise<boolean> {
         paid_installments: debt.paidInstallments,
         account_id: debt.accountId || null,
       };
-      const { error } = await supabase.from('debts').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('debts').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -765,7 +807,7 @@ export async function syncInvestmentWithResult(inv: Investment, isDelete = false
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('investments').delete().eq('id', inv.id);
+      const { error } = await executeSupabaseQuery(client => client.from('investments').delete().eq('id', inv.id));
       if (error) {
         return { success: false, error: `Erro no Supabase: ${error.message}` };
       }
@@ -792,7 +834,7 @@ export async function syncInvestmentWithResult(inv: Investment, isDelete = false
         pluggy_item_id: inv.pluggyItemId ? String(inv.pluggyItemId) : null,
         is_reconciled: Boolean(inv.isReconciled),
       };
-      const { error } = await supabase.from('investments').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('investments').upsert(dbPayload));
       if (error) {
         console.error('[Supabase Error] failed to upsert investment:', error.message || error);
         return { success: false, error: `Erro no Supabase: ${error.message} (${error.code || 'sem código'})` };
@@ -816,7 +858,7 @@ export async function syncAutomationRule(rule: AutomationRule, isDelete = false)
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('automation_rules').delete().eq('id', rule.id);
+      const { error } = await executeSupabaseQuery(client => client.from('automation_rules').delete().eq('id', rule.id));
       return !error;
     } else {
       const dbPayload = {
@@ -826,7 +868,7 @@ export async function syncAutomationRule(rule: AutomationRule, isDelete = false)
         action_field: rule.actionField,
         action_value: rule.actionValue,
       };
-      const { error } = await supabase.from('automation_rules').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('automation_rules').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -841,7 +883,7 @@ export async function syncFamilyMember(mem: FamilyMember, isDelete = false): Pro
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('family_members').delete().eq('id', mem.id);
+      const { error } = await executeSupabaseQuery(client => client.from('family_members').delete().eq('id', mem.id));
       return !error;
     } else {
       const dbPayload = {
@@ -852,7 +894,7 @@ export async function syncFamilyMember(mem: FamilyMember, isDelete = false): Pro
         access_role: mem.accessRole || 'member',
         notify_channels: mem.notifyChannels || ['push'],
       };
-      const { error } = await supabase.from('family_members').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('family_members').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -867,7 +909,7 @@ export async function syncTag(tag: Tag, isDelete = false): Promise<boolean> {
 
   try {
     if (isDelete) {
-      const { error } = await supabase.from('tags').delete().eq('id', tag.id);
+      const { error } = await executeSupabaseQuery(client => client.from('tags').delete().eq('id', tag.id));
       return !error;
     } else {
       const dbPayload = {
@@ -875,7 +917,7 @@ export async function syncTag(tag: Tag, isDelete = false): Promise<boolean> {
         name: tag.name,
         color: tag.color,
       };
-      const { error } = await supabase.from('tags').upsert(dbPayload);
+      const { error } = await executeSupabaseQuery(client => client.from('tags').upsert(dbPayload));
       return !error;
     }
   } catch (err) {
@@ -892,7 +934,9 @@ export async function fetchAppPreference(key: string): Promise<any | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
   try {
-    const { data, error } = await supabase.from('app_preferences').select('value').eq('key', key).maybeSingle();
+    const { data, error } = await executeSupabaseQuery(client =>
+      client.from('app_preferences').select('value').eq('key', key).maybeSingle()
+    );
     if (error) {
       console.warn(`[Supabase Error] failed to load preference ${key}:`, error.message || error);
       return null;
@@ -908,9 +952,9 @@ export async function saveAppPreference(key: string, value: any): Promise<boolea
   const supabase = getSupabaseClient();
   if (!supabase) return false;
   try {
-    const { error } = await supabase
-      .from('app_preferences')
-      .upsert({ key, value, updated_at: new Date().toISOString() });
+    const { error } = await executeSupabaseQuery(client =>
+      client.from('app_preferences').upsert({ key, value, updated_at: new Date().toISOString() })
+    );
     return !error;
   } catch (err) {
     console.error(`Failed to save preference ${key} to Supabase:`, err);

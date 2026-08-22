@@ -182,29 +182,32 @@ export default function CategoryManager({
     setIsFormOpen(false);
   };
 
+  const [deletingSub, setDeletingSub] = useState<Subcategory | null>(null);
+  const [deletingTag, setDeletingTag] = useState<TagType | null>(null);
+
   const handleOpenDelete = (cat: Category) => {
     // Check if there are transactions linked to this category name
     const hasTxs = transactions.some(t => t.category.toLowerCase() === cat.name.toLowerCase());
+    setDeletingCat(cat);
     if (hasTxs) {
-      // Need remapping
-      setDeletingCat(cat);
       // Select the first valid alternative category of the same type
       const alternatives = mainCategories.filter(c => c.id !== cat.id && c.type === cat.type);
       setRemapCatId(alternatives[0]?.id || '');
     } else {
-      // No transactions linked, direct delete
-      if (window.confirm(`Tem certeza que deseja excluir a categoria "${cat.name}"?`)) {
-        onDeleteCategory(cat.id);
-      }
+      setRemapCatId('');
     }
   };
 
   const handleConfirmDeleteWithRemap = () => {
-    if (!deletingCat || !remapCatId) return;
-    const targetCat = mainCategories.find(c => c.id === remapCatId);
-    if (!targetCat) return;
-
-    onDeleteCategory(deletingCat.id, targetCat.name);
+    if (!deletingCat) return;
+    const hasTxs = transactions.some(t => t.category.toLowerCase() === deletingCat.name.toLowerCase());
+    if (hasTxs) {
+      const targetCat = mainCategories.find(c => c.id === remapCatId);
+      if (!targetCat) return;
+      onDeleteCategory(deletingCat.id, targetCat.name);
+    } else {
+      onDeleteCategory(deletingCat.id);
+    }
     setDeletingCat(null);
   };
 
@@ -236,9 +239,7 @@ export default function CategoryManager({
   };
 
   const handleDeleteSub = (sub: Subcategory) => {
-    if (onDeleteSubcategory && window.confirm(`Deseja excluir a subcategoria "${sub.name}"?`)) {
-      onDeleteSubcategory(sub.id);
-    }
+    setDeletingSub(sub);
   };
 
   // Tags handlers
@@ -269,9 +270,7 @@ export default function CategoryManager({
   };
 
   const handleRemoveTag = (tag: TagType) => {
-    if (onDeleteTag && window.confirm(`Tem certeza que deseja excluir a tag "#${tag.name}"?`)) {
-      onDeleteTag(tag.id);
-    }
+    setDeletingTag(tag);
   };
 
   return (
@@ -780,54 +779,129 @@ export default function CategoryManager({
       )}
 
       {/* Remap and Deletion Modal */}
-      {deletingCat && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center gap-2 text-rose-500 border-b border-slate-100 pb-3">
-              <AlertTriangle size={20} />
-              <h3 className="text-base font-display font-extrabold tracking-tight">Vínculos de Transações Detectados</h3>
-            </div>
+      {deletingCat && (() => {
+        const hasTxs = transactions.some(t => t.category.toLowerCase() === deletingCat.name.toLowerCase());
+        return (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+              <div className="flex items-center gap-2 text-rose-500 border-b border-slate-100 pb-3">
+                <AlertTriangle size={20} />
+                <h3 className="text-base font-display font-extrabold tracking-tight">
+                  {hasTxs ? 'Vínculos de Transações Detectados' : 'Excluir Categoria'}
+                </h3>
+              </div>
 
-            <div className="text-xs text-slate-600 space-y-2 leading-relaxed">
-              <p>
-                A categoria <b>"{deletingCat.name}"</b> possui transações financeiras registradas no histórico. 
-                Para não excluir o histórico financeiro da sua família, por favor remapeie estas transações para outra categoria de destino.
-              </p>
-              
-              <div className="p-3 bg-rose-50/50 border border-rose-100 rounded-xl text-[11px] text-rose-700 font-medium">
-                Esta ação migrará automaticamente todas as transações da categoria "{deletingCat.name}" para a categoria selecionada abaixo, e em seguida removerá a categoria antiga.
+              {hasTxs ? (
+                <>
+                  <div className="text-xs text-slate-600 space-y-2 leading-relaxed">
+                    <p>
+                      A categoria <b>&quot;{deletingCat.name}&quot;</b> possui transações financeiras registradas no histórico. 
+                      Para não excluir o histórico financeiro da sua família, por favor remapeie estas transações para outra categoria de destino.
+                    </p>
+                    <div className="p-3 bg-rose-50/50 border border-rose-100 rounded-xl text-[11px] text-rose-700 font-medium">
+                      Esta ação migrará automaticamente todas as transações da categoria &quot;{deletingCat.name}&quot; para a categoria selecionada abaixo, e em seguida removerá a categoria antiga.
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] text-slate-400 font-bold uppercase">Categoria de Destino</label>
+                    <select
+                      value={remapCatId}
+                      onChange={(e) => setRemapCatId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
+                    >
+                      {mainCategories
+                        .filter(c => c.id !== deletingCat.id && c.type === deletingCat.type)
+                        .map(c => (
+                          <option key={c.id} value={c.id}>{c.name} ({c.type === 'income' ? 'Receita' : 'Despesa'})</option>
+                        ))
+                      }
+                    </select>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-slate-600">
+                  Tem certeza que deseja excluir a categoria <b>&quot;{deletingCat.name}&quot;</b>?
+                </p>
+              )}
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setDeletingCat(null)}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteWithRemap}
+                  className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-md shadow-rose-100/50 transition-colors cursor-pointer"
+                >
+                  {hasTxs ? 'Remapear e Excluir' : 'Excluir'}
+                </button>
               </div>
             </div>
+          </div>
+        );
+      })()}
 
-            <div className="space-y-1">
-              <label className="block text-[10px] text-slate-400 font-bold uppercase">Categoria de Destino</label>
-              <select
-                value={remapCatId}
-                onChange={(e) => setRemapCatId(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
-              >
-                {mainCategories
-                  .filter(c => c.id !== deletingCat.id && c.type === deletingCat.type)
-                  .map(c => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.type === 'income' ? 'Receita' : 'Despesa'})</option>
-                  ))
-                }
-              </select>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+      {/* Delete Subcategory Modal */}
+      {deletingSub && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Excluir Subcategoria</h3>
+            <p className="text-xs text-slate-500">
+              Deseja excluir a subcategoria &quot;{deletingSub.name}&quot;?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setDeletingCat(null)}
-                className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                onClick={() => setDeletingSub(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-600 rounded-xl transition-colors cursor-pointer"
               >
                 Cancelar
               </button>
               <button
-                onClick={handleConfirmDeleteWithRemap}
-                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-md shadow-rose-100/50 transition-colors cursor-pointer"
+                type="button"
+                onClick={() => {
+                  if (onDeleteSubcategory) onDeleteSubcategory(deletingSub.id);
+                  setDeletingSub(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
               >
-                Remapear e Excluir
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Tag Modal */}
+      {deletingTag && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Excluir Tag</h3>
+            <p className="text-xs text-slate-500">
+              Tem certeza que deseja excluir a tag &quot;#{deletingTag.name}&quot;?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingTag(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-600 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteTag) onDeleteTag(deletingTag.id);
+                  setDeletingTag(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Excluir
               </button>
             </div>
           </div>

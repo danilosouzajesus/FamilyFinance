@@ -35,6 +35,7 @@ export default function FamilyMembers({
   // UI States
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<FamilyMember | null>(null);
+  const [deletingMember, setDeletingMember] = useState<FamilyMember | null>(null);
 
   // Form Fields
   const [name, setName] = useState('');
@@ -206,11 +207,7 @@ export default function FamilyMembers({
                   </button>
                   {m.id !== 'mem_geral' && (
                     <button
-                      onClick={() => {
-                        if (window.confirm(`Tem certeza que deseja excluir ${m.name}? Todas as transações dele continuarão existindo, mas sem membro atribuído.`)) {
-                          onDeleteMember(m.id);
-                        }
-                      }}
+                      onClick={() => setDeletingMember(m)}
                       className="p-1.5 rounded hover:bg-slate-50 hover:text-rose-600 text-slate-400 transition-colors cursor-pointer"
                       id={`delete-member-btn-${m.id}`}
                     >
@@ -397,6 +394,36 @@ export default function FamilyMembers({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Delete Member Confirmation Modal */}
+      {deletingMember && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-800">Excluir Membro</h3>
+            <p className="text-xs text-slate-500">
+              Tem certeza que deseja excluir <b>{deletingMember.name}</b>? Todas as transações dele continuarão existindo, mas sem membro atribuído.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingMember(null)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-600 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteMember(deletingMember.id);
+                  setDeletingMember(null);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Excluir
+              </button>
+            </div>
           </div>
         </div>
       )}
